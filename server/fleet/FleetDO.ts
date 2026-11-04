@@ -15,6 +15,8 @@ import type { Identity } from "./jwt"
 import { atLeast, roleOf, scopeOf, type Scope } from "./access"
 import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
 import { insert, list, makeCtx, remove, update, type ListQuery } from "./data"
+import * as ops from "./ops"
+import * as external from "./external"
 import { ageOut, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "./maintenance"
 import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
@@ -29,6 +31,55 @@ function nextTick(now: number): number {
   d.setUTCMinutes(7, 0, 0)
   if (d.getTime() <= now) d.setUTCHours(d.getUTCHours() + 1)
   return d.getTime()
+}
+
+export type OpAuth =
+  | { kind: "session"; who: Identity }
+  | { kind: "key"; key: string; want: "read" | "manage" }
+  | { kind: "none" }
+
+const scoped = (fn: (db: Db, scope: Scope, c: ops.OpCtx, a: any) => unknown) => (c: ops.OpCtx, a: any) => {
+  if (!c.scope) throw new HttpError(401, "Sign in or use an API key")
+  return fn(c.db, c.scope, c, a)
+}
+
+/** Every operation op() can run. The Worker's routes each name one. */
+const OPS: Record<string, (c: ops.OpCtx, a: any) => unknown> = {
+  monitorsForClient: ops.monitorsForClient,
+  markRead: ops.markRead,
+  createSystem: ops.createSystem,
+  updateSystem: ops.updateSystem,
+  archiveSystem: ops.archiveSystem,
+  archiveService: ops.archiveService,
+  archivable: ops.archivable,
+  clusterSuggest: ops.clusterSuggest,
+  listChannels: ops.listChannels,
+  updateChannel: ops.updateChannel,
+  deleteChannel: ops.deleteChannel,
+  testChannel: ops.testChannel,
+  addWebhook: ops.addWebhook,
+  connectSlack: ops.connectSlack,
+  slackChannels: ops.slackChannels,
+  listKeys: ops.listKeys,
+  createKey: ops.createKey,
+  deleteKey: ops.deleteKey,
+  // The archive's months are the tenant's; reading them is for members.
+  archiveAccess: (c) => {
+    if (!c.scope?.all) throw new HttpError(404, "Not found")
+    return true
+  },
+  "external.fleet": scoped((db, scope) => external.fleet(db, scope)),
+  "external.fleetSystem": scoped((db, scope, _c, a) => external.fleetSystem(db, scope, String(a.systemId))),
+  "external.systems": scoped((db, scope) => external.systems(db, scope)),
+  "external.system": scoped((db, scope, _c, a) => external.system(db, scope, String(a.systemId))),
+  "external.events": scoped((db, scope, _c, a) => external.events(db, scope, String(a.systemId), a)),
+  "external.history": scoped((db, scope, _c, a) => external.history(db, scope, String(a.systemId), String(a.state || ""), a.limit)),
+  "external.groups": scoped(async (db, scope, c) => {
+    const { data } = await db.from("grants").select("resource_id").eq("grantee_id", c.who!.sub).eq("resource_type", "group")
+    return external.groups(db, scope, new Set((data || []).map((g: any) => g.resource_id)))
+  }),
+  "external.incidents": scoped((db, scope, _c, a) => external.incidents(db, scope, a)),
+  "external.enroll": (c, a) => mintEnrollment(c.db, c.who!, a, String(a.origin)),
 }
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
@@ -166,6 +217,25 @@ export class FleetDO extends DurableObject {
       if (op === "update") return update(c, table, String(args.id || ""), args.body)
       return remove(c, table, args.body)
     }))
+  }
+
+  /**
+   * Everything else the routes ask for, by name. Three kinds of caller:
+   * a session the Worker already verified, an API key checked here against
+   * this tenant's api_keys, or an agent that brings its own system key.
+   */
+  async op(auth: OpAuth, name: string, args: any = {}) {
+    return this.rpc(name, async () => {
+      const handler = OPS[name]
+      if (!handler) throw new HttpError(404, `No such operation: ${name}`)
+      let who: Identity | null = null
+      if (auth.kind === "session") who = auth.who
+      else if (auth.kind === "key") who = await ops.identifyKey(this.db, auth.key, auth.want)
+      const scope = who ? await scopeOf(this.db, who) : null
+      if (who && !scope) throw new HttpError(403, "You don't have access to this tenant")
+      const c: ops.OpCtx = { db: this.db, sql: this.ctx.storage.sql, env: this.env, who, scope, role: scope?.all ? scope.role : null }
+      return handler(c, args)
+    })
   }
 
   private async scoped<T>(who: Identity, fn: (scope: Scope) => Promise<T>): Promise<T> {
