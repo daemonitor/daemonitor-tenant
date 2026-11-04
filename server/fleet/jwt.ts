@@ -15,6 +15,8 @@ export interface Identity {
   sub: string
   email: string | null
   emailVerified: boolean
+  /** When the token stops being good, in epoch seconds. A live socket is closed then. */
+  exp?: number
 }
 
 type Jwk = JsonWebKey & { kid?: string; alg?: string }
@@ -75,5 +77,5 @@ export async function verifyToken(
   if (typeof claims.nbf === "number" && claims.nbf - LEEWAY > now) throw new TokenError("token not yet valid")
   if (typeof claims.sub !== "string" || !claims.sub) throw new TokenError("token has no subject")
 
-  return { sub: claims.sub, email: typeof claims.email === "string" ? claims.email.toLowerCase() : null, emailVerified: claims.email_verified === true }
+  return { sub: claims.sub, email: typeof claims.email === "string" ? claims.email.toLowerCase() : null, emailVerified: claims.email_verified === true, exp: claims.exp }
 }

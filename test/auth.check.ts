@@ -12,7 +12,9 @@ const check = (token: string, over: Partial<Parameters<typeof verifyToken>[1]> =
   verifyToken(token, { issuer: ISS, audience: AUD, jwks, ...over })
 
 const good = await issuer.sign({ aud: AUD, sub: "u1", email: "Owner@Acme.test", email_verified: true })
-assert.deepEqual(await check(good), { sub: "u1", email: "owner@acme.test", emailVerified: true })
+const id = await check(good)
+assert.deepEqual({ ...id, exp: undefined }, { sub: "u1", email: "owner@acme.test", emailVerified: true, exp: undefined })
+assert.ok(id.exp! > Date.now() / 1000, "carries the expiry for live sockets")
 
 // the tenant's own origin, nothing else
 await assert.rejects(check(await issuer.sign({ aud: "https://other.test", sub: "u1" })), /another tenant/)

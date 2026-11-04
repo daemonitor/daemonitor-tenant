@@ -24,6 +24,9 @@ import { COLUMNS, HAS_ID, type Columns } from "./schema"
 type Row = Record<string, any>
 type Result = { data: any; error: { message: string; code?: string } | null; count?: number | null }
 
+export type ChangeOp = "INSERT" | "UPDATE" | "DELETE"
+export type OnChange = (table: string, op: ChangeOp, rows: Row[]) => void
+
 export interface Db {
   from(table: string): Query
 }
@@ -92,7 +95,7 @@ class Query implements PromiseLike<Result> {
   private conflict: string[] = []
   private ignoreDupes = false
 
-  constructor(private sql: SqlStorage, private table: string) {
+  constructor(private sql: SqlStorage, private table: string, private onChange?: OnChange) {
     if (!COLUMNS[table]) throw new Error(`db: no table ${table}`)
   }
 
@@ -313,24 +316,44 @@ class Query implements PromiseLike<Result> {
               ? ` on conflict (${target}) do nothing`
               : ` on conflict (${target}) do update set ${sets.join(", ")}`
           }
-          q += ` returning ${this.returning ? this.selectList(this.returning) : "*"}`
-          out.push(...this.rows(q, keys.map((k) => encode(this.kinds[k], row[k]))))
+          out.push(...this.rows(`${q} returning *`, keys.map((k) => encode(this.kinds[k], row[k]))))
         }
-        return this.finish(this.returning ? out : (this.one ? out : null) as any)
+        // An upsert can't tell which rows were new. The stores treat INSERT
+        // as insert-or-replace by id, so that's what every write here says.
+        this.emit("INSERT", out)
+        return this.finish(this.returning ? this.project(out) : (this.one ? out : null) as any)
       }
       case "update": {
         const keys = Object.keys(this.patch).filter((k) => this.patch[k] !== undefined)
         for (const k of keys) if (!this.kinds[k]) throw new Error(`db: no column ${this.table}.${k}`)
         if (!keys.length) return { data: [], error: null }
-        const q = `update ${this.table} set ${keys.map((k) => `${k} = ?`).join(", ")}${w.sql} returning ${this.returning ? this.selectList(this.returning) : "*"}`
+        const q = `update ${this.table} set ${keys.map((k) => `${k} = ?`).join(", ")}${w.sql} returning *`
         const data = this.rows(q, [...keys.map((k) => encode(this.kinds[k], this.patch[k])), ...w.args])
-        return this.finish(this.returning ? data : (null as any))
+        this.emit("UPDATE", data)
+        return this.finish(this.returning ? this.project(data) : (null as any))
       }
       case "delete": {
-        const data = this.rows(`delete from ${this.table}${w.sql} returning ${this.returning ? this.selectList(this.returning) : "*"}`, w.args)
-        return this.finish(this.returning ? data : (null as any))
+        const data = this.rows(`delete from ${this.table}${w.sql} returning *`, w.args)
+        this.emit("DELETE", data)
+        return this.finish(this.returning ? this.project(data) : (null as any))
       }
     }
+  }
+
+  private emit(op: ChangeOp, rows: Row[]) {
+    if (rows.length && this.onChange) this.onChange(this.table, op, rows)
+  }
+
+  /** A write's full returned rows cut down to what .select() asked for: plain columns, maybe aliased. */
+  private project(rows: Row[]): Row[] {
+    const cols = (this.returning || "*").trim()
+    if (cols === "*") return rows
+    const pick = cols.split(",").map((s) => s.trim()).filter(Boolean).map((c) => {
+      const [alias, col] = c.includes(":") ? c.split(":").map((x) => x.trim()) : [c, c]
+      if (!this.kinds[col]) throw new Error(`db: a write can only return plain columns, not ${c}`)
+      return [alias, col] as const
+    })
+    return rows.map((r) => Object.fromEntries(pick.map(([alias, col]) => [alias, r[col]])))
   }
 
   then<A = Result, B = never>(ok?: ((r: Result) => A | PromiseLike<A>) | null, fail?: ((e: any) => B | PromiseLike<B>) | null) {
@@ -346,6 +369,10 @@ class Query implements PromiseLike<Result> {
   }
 }
 
-export function sqlClient(sql: SqlStorage): Db {
-  return { from: (table: string) => new Query(sql, table) }
+/**
+ * `onChange` hears every row written, as full rows, after the write. It's the
+ * fleet's change feed: the DO turns it into live updates for open browsers.
+ */
+export function sqlClient(sql: SqlStorage, onChange?: OnChange): Db {
+  return { from: (table: string) => new Query(sql, table, onChange) }
 }

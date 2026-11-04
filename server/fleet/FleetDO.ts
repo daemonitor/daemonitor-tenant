@@ -7,11 +7,14 @@
  */
 import { DurableObject } from "cloudflare:workers"
 import { migrate } from "./schema"
-import { sqlClient, type Db } from "./db"
+import { sqlClient, type ChangeOp, type Db } from "./db"
 import { ingest, type IngestRequest } from "./ingest"
 import { cloudflarePush, type CloudflarePushRequest } from "./cloudflare"
 import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
 import type { Identity } from "./jwt"
+import { scopeOf, type Scope } from "./access"
+import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
+import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
 import { HttpError, type FleetCtx } from "./ctx"
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
@@ -28,7 +31,76 @@ export class FleetDO extends DurableObject {
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.transactionSync(() => migrate(ctx.storage.sql))
     })
-    this.db = sqlClient(ctx.storage.sql)
+    this.db = sqlClient(ctx.storage.sql, (table, op, rows) => this.broadcast(table, op, rows))
+    // Answered by the runtime without waking the DO, so an idle tab's keepalive costs nothing.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"))
+  }
+
+  /**
+   * A browser opening a live socket. Only reached through upgradeLive() in the
+   * Worker, which has already checked the token and put the identity in a
+   * header; nothing outside the Worker can address this DO.
+   */
+  async fetch(request: Request): Promise<Response> {
+    const raw = request.headers.get("x-daemonitor-identity")
+    if (!raw) return new Response("Not found", { status: 404 })
+    const who = JSON.parse(raw) as Identity
+    const scope = await scopeOf(this.db, who)
+    if (!scope) return new Response("You don't have access to this tenant", { status: 403 })
+    const [client, server] = Object.values(new WebSocketPair())
+    this.ctx.acceptWebSocket(server)
+    server.serializeAttachment(toAttachment(scope, who.exp ?? 0))
+    return new Response(null, { status: 101, webSocket: client, headers: { "sec-websocket-protocol": LIVE_PROTOCOL } })
+  }
+
+  /** Every write to a watched table, out to every socket allowed to see it. */
+  private broadcast(table: string, op: ChangeOp, rows: Record<string, any>[]) {
+    const sockets = this.ctx.getWebSockets()
+    if (!sockets.length) return
+    const now = Math.floor(Date.now() / 1000)
+    for (const ws of sockets) {
+      const att = ws.deserializeAttachment() as LiveAttachment | null
+      if (!att) continue
+      if (att.exp && att.exp < now) {
+        // The browser reconnects with a fresh token, which also picks up any
+        // change in what this person may see.
+        ws.close(4001, "token expired")
+        continue
+      }
+      const scope = fromAttachment(att)
+      for (const row of rows) {
+        const msg = liveMessage(scope, table, op, row)
+        if (msg) {
+          try { ws.send(JSON.stringify(msg)) } catch { /* closing; the next broadcast skips it */ }
+        }
+      }
+    }
+  }
+
+  async webSocketMessage() {
+    // Browsers only ever send "ping", which the auto-response answers.
+  }
+
+  async webSocketClose(ws: WebSocket, code: number, reason: string) {
+    try { ws.close(code, reason) } catch { /* already closed */ }
+  }
+
+  private async scoped<T>(who: Identity, fn: (scope: Scope) => Promise<T>): Promise<T> {
+    const scope = await scopeOf(this.db, who)
+    if (!scope) throw new HttpError(403, "You don't have access to this tenant")
+    return fn(scope)
+  }
+
+  async listSystems(who: Identity) {
+    return this.rpc("system list", () => this.scoped(who, (s) => listSystems(this.db, s)))
+  }
+
+  async listClientStates(who: Identity) {
+    return this.rpc("client state list", () => this.scoped(who, (s) => listClientStates(this.db, s)))
+  }
+
+  async listNotifications(who: Identity, q: NotificationQuery) {
+    return this.rpc("notification list", () => this.scoped(who, (s) => listNotifications(this.db, s, q)))
   }
 
   /**
