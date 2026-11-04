@@ -12,11 +12,23 @@ import { ingest, type IngestRequest } from "./ingest"
 import { cloudflarePush, type CloudflarePushRequest } from "./cloudflare"
 import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
 import type { Identity } from "./jwt"
-import { scopeOf, type Scope } from "./access"
+import { atLeast, roleOf, scopeOf, type Scope } from "./access"
 import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
+import { ageOut, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "./maintenance"
 import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
 import { HttpError, type FleetCtx } from "./ctx"
+
+const JOBS = ["reap", "thin", "clusterPurge", "archive"] as const
+type Job = (typeof JOBS)[number]
+
+/** The next :07 past the hour. */
+function nextTick(now: number): number {
+  const d = new Date(now)
+  d.setUTCMinutes(7, 0, 0)
+  if (d.getTime() <= now) d.setUTCHours(d.getUTCHours() + 1)
+  return d.getTime()
+}
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
 
@@ -31,6 +43,7 @@ export class FleetDO extends DurableObject {
     super(ctx, env as any)
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.transactionSync(() => migrate(ctx.storage.sql))
+      if ((await ctx.storage.getAlarm()) == null) await ctx.storage.setAlarm(nextTick(Date.now()))
     })
     this.db = sqlClient(ctx.storage.sql, (table, op, rows) => this.broadcast(table, op, rows))
     // Answered by the runtime without waking the DO, so an idle tab's keepalive costs nothing.
@@ -84,6 +97,63 @@ export class FleetDO extends DurableObject {
 
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
     try { ws.close(code, reason) } catch { /* already closed */ }
+  }
+
+  /**
+   * Housekeeping, once an hour at :07. Each job records when it last ran, so a
+   * missed hour (a deploy, an outage) is caught up on the next one rather than
+   * skipped until tomorrow. One failing job doesn't stop the others, and the
+   * next alarm is always set.
+   */
+  async alarm() {
+    try {
+      await this.runJobs(Date.now())
+    } finally {
+      await this.ctx.storage.setAlarm(nextTick(Date.now()))
+    }
+  }
+
+  private async runJobs(now: number, only?: Job) {
+    const sql = this.ctx.storage.sql
+    const d = new Date(now)
+    const today = d.toISOString().slice(0, 10)
+    const month = today.slice(0, 7)
+    const state = ((await this.ctx.storage.get("jobs")) as Record<string, string>) || {}
+    const out: Record<string, unknown> = {}
+    const run = async (job: Job, due: boolean, fn: () => Promise<unknown> | unknown, stamp: string) => {
+      if (only ? only !== job : !due) return
+      try {
+        out[job] = await fn()
+        state[job] = stamp
+      } catch (e: any) {
+        out[job] = { error: e?.message || String(e) }
+        console.error(`maintenance: ${job} failed:`, e)
+      }
+    }
+    await run("reap", true, () => reapStaleServices(this.db, sql, now), d.toISOString())
+    await run("thin", d.getUTCHours() >= 4 && state.thin !== today, () => thinHistory(sql, now), today)
+    await run("clusterPurge", d.getUTCHours() >= 4 && state.clusterPurge !== today, () => purgeClusterHistory(sql, now), today)
+    // A failed export leaves the month unstamped, so it's retried next hour, and
+    // the age-out doesn't run: rows are never deleted before they're in R2.
+    await run("archive", d.getUTCHours() >= 2 && state.archive !== month, async () => {
+      const bucket = (this.env as any).ARCHIVE as R2Bucket | undefined
+      if (!bucket) throw new Error("no ARCHIVE bucket bound")
+      const r = await exportMonths(sql, bucket, now)
+      if (!r.ok) throw new Error(`export incomplete: ${r.done.length} written, see the log`)
+      return { ...r, agedOut: ageOut(sql, now) }
+    }, month)
+    await this.ctx.storage.put("jobs", state)
+    if (Object.keys(out).length) console.log("maintenance:", JSON.stringify(out))
+    return out
+  }
+
+  /** Run one job now, for an owner: catching up after an import, or checking the archive. */
+  async runJob(who: Identity, job: Job) {
+    return this.rpc("maintenance", async () => {
+      if (!atLeast(await roleOf(this.db, who), "owner")) throw new HttpError(403, "Only the owner can run maintenance")
+      if (!JOBS.includes(job)) throw new HttpError(400, `Unknown job, expected one of ${JOBS.join(", ")}`)
+      return this.runJobs(Date.now(), job)
+    })
   }
 
   private async scoped<T>(who: Identity, fn: (scope: Scope) => Promise<T>): Promise<T> {

@@ -4,6 +4,8 @@
   "compatibility_date": "2025-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "alias": { "~": "../frontend" },
+  // The monthly archive streams a month of reports through gzip in one alarm.
+  "limits": { "cpu_ms": 300000 },
   "durable_objects": {
     "bindings": [{ "name": "FLEET", "class_name": "FleetDO" }]
   },

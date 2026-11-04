@@ -8,7 +8,8 @@ export function freshSql(): SqlStorage {
   const sql = {
     exec(q: string, ...args: any[]) {
       const rows = raw.prepare(q).all(...args) as any[]
-      return { toArray: () => rows, one: () => rows[0] }
+      const rowsWritten = /^\s*(insert|update|delete)/i.test(q) ? Number((raw.prepare("select changes() as n").get() as any).n) : 0
+      return { toArray: () => rows, one: () => rows[0], rowsWritten }
     },
   } as unknown as SqlStorage
   migrate(sql)
