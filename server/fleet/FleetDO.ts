@@ -1,0 +1,44 @@
+/**
+ * The tenant's whole fleet: one Durable Object, one SQLite database.
+ *
+ * Requests run one at a time inside it, which is what makes notify()'s
+ * check-then-insert safe without a database round trip in between. The unique
+ * index on open alerts is still there as a backstop.
+ */
+import { DurableObject } from "cloudflare:workers"
+import { migrate } from "./schema"
+import { sqlClient, type Db } from "./db"
+import { ingest, type IngestRequest } from "./ingest"
+import { HttpError, type FleetCtx } from "./ctx"
+
+export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
+
+export class FleetDO extends DurableObject {
+  private db: Db
+  private fleetCtx: FleetCtx = {
+    // ponytail: no push yet; it goes through daemonitor.com's relay once that exists.
+    push: async () => {},
+  }
+
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env as any)
+    ctx.blockConcurrencyWhile(async () => {
+      ctx.storage.transactionSync(() => migrate(ctx.storage.sql))
+    })
+    this.db = sqlClient(ctx.storage.sql)
+  }
+
+  /**
+   * An agent report. Errors come back as values: an exception crossing the RPC
+   * boundary loses its status code, and a 404 for an unknown key is not a 500.
+   */
+  async ingest(req: IngestRequest): Promise<RpcResult<unknown>> {
+    try {
+      return { ok: true, value: await ingest(this.db, this.fleetCtx, req) }
+    } catch (e: any) {
+      if (e instanceof HttpError) return { ok: false, statusCode: e.statusCode, message: e.message }
+      console.error("ingest failed:", e)
+      return { ok: false, statusCode: 500, message: e?.message || "Internal server error" }
+    }
+  }
+}

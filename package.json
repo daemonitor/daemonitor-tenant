@@ -1,0 +1,18 @@
+{
+  "name": "@daemonitor/tenant",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nitro build",
+    "dev": "nitro build && wrangler dev",
+    "deploy": "nitro build && wrangler deploy",
+    "check": "tsx test/db.check.ts && tsx test/ingest.check.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251101.0",
+    "nitropack": "2.13.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.45.0"
+  }
+}

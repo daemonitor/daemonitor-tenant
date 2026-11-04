@@ -1,0 +1,16 @@
+{
+  "name": "daemonitor-tenant",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": { "~": "../frontend" },
+  "durable_objects": {
+    "bindings": [{ "name": "FLEET", "class_name": "FleetDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FleetDO"] }],
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "daemonitor-tenant-archive" }],
+  "vars": {
+    // Where alert links point: the app at daemonitor.com.
+    "APP_URL": "https://daemonitor.com/app"
+  }
+}
