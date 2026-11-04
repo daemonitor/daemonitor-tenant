@@ -86,9 +86,24 @@ export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: num
 
 export class FleetDO extends DurableObject {
   private db: Db
+  /**
+   * Phone push goes through daemonitor.com, which holds the push credentials
+   * and the devices. Sent in the background: a push must never hold up the
+   * report that raised the alert.
+   */
   private fleetCtx: FleetCtx = {
-    // ponytail: no push yet; it goes through daemonitor.com's relay once that exists.
-    push: async () => {},
+    push: async (userId, payload) => {
+      const relay = (await this.ctx.storage.get("relay")) as { secret: string; origin: string } | undefined
+      const issuer = String((this.env as any).DAEMONITOR_ISSUER || "https://daemonitor.com").replace(/\/$/, "")
+      if (!relay) return
+      this.ctx.waitUntil(
+        fetch(`${issuer}/api/push/relay`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${relay.secret}`, "x-daemonitor-tenant": relay.origin, "content-type": "application/json" },
+          body: JSON.stringify({ userId, ...payload }),
+        }).then((r) => { if (!r.ok) console.warn(`push relay: HTTP ${r.status}`) }, (e) => console.warn("push relay:", e?.message || e)),
+      )
+    },
   }
 
   constructor(ctx: DurableObjectState, env: unknown) {
@@ -295,6 +310,16 @@ export class FleetDO extends DurableObject {
   /** A Cloudflare reporter's push. */
   async cloudflarePush(req: CloudflarePushRequest): Promise<RpcResult<unknown>> {
     return this.rpc("cloudflare push", () => cloudflarePush(this.db, this.fleetCtx, req))
+  }
+
+  /** The relay secret daemonitor.com handed over, and this tenant's origin to name itself with. Owner only. */
+  async setRelaySecret(who: Identity, secret: string, origin: string) {
+    return this.rpc("relay secret", async () => {
+      if (!atLeast(await roleOf(this.db, who), "owner")) throw new HttpError(403, "Only the owner can set the relay secret")
+      if (!/^rly_[0-9a-f]{64}$/.test(secret)) throw new HttpError(400, "That isn't a relay secret")
+      await this.ctx.storage.put("relay", { secret, origin })
+      return { success: true }
+    })
   }
 
   /** The first owner, with the CLAIM_CODE set at deploy. */
