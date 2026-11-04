@@ -9,6 +9,7 @@ import { DurableObject } from "cloudflare:workers"
 import { migrate } from "./schema"
 import { sqlClient, type Db } from "./db"
 import { ingest, type IngestRequest } from "./ingest"
+import { cloudflarePush, type CloudflarePushRequest } from "./cloudflare"
 import { HttpError, type FleetCtx } from "./ctx"
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
@@ -33,11 +34,20 @@ export class FleetDO extends DurableObject {
    * boundary loses its status code, and a 404 for an unknown key is not a 500.
    */
   async ingest(req: IngestRequest): Promise<RpcResult<unknown>> {
+    return this.rpc("ingest", () => ingest(this.db, this.fleetCtx, req))
+  }
+
+  /** A Cloudflare reporter's push. */
+  async cloudflarePush(req: CloudflarePushRequest): Promise<RpcResult<unknown>> {
+    return this.rpc("cloudflare push", () => cloudflarePush(this.db, this.fleetCtx, req))
+  }
+
+  private async rpc<T>(what: string, fn: () => Promise<T>): Promise<RpcResult<T>> {
     try {
-      return { ok: true, value: await ingest(this.db, this.fleetCtx, req) }
+      return { ok: true, value: await fn() }
     } catch (e: any) {
       if (e instanceof HttpError) return { ok: false, statusCode: e.statusCode, message: e.message }
-      console.error("ingest failed:", e)
+      console.error(`${what} failed:`, e)
       return { ok: false, statusCode: 500, message: e?.message || "Internal server error" }
     }
   }

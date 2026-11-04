@@ -30,12 +30,20 @@ export interface Db {
 
 const OPS: Record<string, string> = { eq: "=", neq: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=", like: "like" }
 
-/** A column reference, possibly a JSON path, as SQL. */
-function colSql(table: string, col: string): string {
-  const m = col.match(/^(\w+)(->>?)(\w+)$/)
+/**
+ * A column reference, possibly a JSON path ("data->script->usage"), as SQL.
+ *
+ * In a filter a path is always its scalar value (json_extract), which is what
+ * the server compares against. In a select list, a path ending in `->` returns
+ * JSON (parsed on read, as PostgREST returns jsonb) and one ending in `->>`
+ * returns text.
+ */
+function colSql(table: string, col: string, inSelect = false): string {
+  const m = col.match(/^(\w+)((?:->>?\w+)+)$/)
   if (m) {
     if (!COLUMNS[table]?.[m[1]]) throw new Error(`db: no column ${table}.${m[1]}`)
-    return `json_extract(${m[1]}, '$.${m[3]}')`
+    const path = `$.${[...m[2].matchAll(/->>?(\w+)/g)].map((k) => k[1]).join(".")}`
+    return inSelect && !m[2].match(/->>\w+$/) ? `(${m[1]} -> '${path}')` : `json_extract(${m[1]}, '${path}')`
   }
   if (!/^\w+$/.test(col) || !COLUMNS[table]?.[col]) throw new Error(`db: no column ${table}.${col}`)
   return col
@@ -222,13 +230,17 @@ class Query implements PromiseLike<Result> {
     return this
   }
 
-  /** "a, b, alias:c, data->>x" as a select list. */
+  /** Select-list names whose value is JSON text from a `->` path, parsed on read. */
+  private jsonPaths = new Set<string>()
+
+  /** "a, b, alias:c, data->>x, deps:data->script->deployments" as a select list. */
   private selectList(cols: string): string {
     if (cols.trim() === "*") return "*"
     return cols.split(",").map((s) => s.trim()).filter(Boolean).map((c) => {
       const [alias, col] = c.includes(":") ? c.split(":").map((x) => x.trim()) : [null, c]
-      const expr = colSql(this.table, col)
-      const name = alias || (col.includes("->") ? col.split(/->>?/).pop() : col)
+      const expr = colSql(this.table, col, true)
+      const name = alias || (col.includes("->") ? col.split(/->>?/).pop()! : col)
+      if (expr.endsWith("')") && expr.startsWith("(")) this.jsonPaths.add(name)
       return expr === name ? expr : `${expr} as ${name}`
     }).join(", ")
   }
@@ -248,7 +260,11 @@ class Query implements PromiseLike<Result> {
   }
 
   private rows(query: string, args: any[]): Row[] {
-    return this.sql.exec(query, ...args).toArray().map((r) => decode(this.kinds, { ...r }))
+    return this.sql.exec(query, ...args).toArray().map((r) => {
+      const row = decode(this.kinds, { ...r })
+      for (const k of this.jsonPaths) if (typeof row[k] === "string") row[k] = JSON.parse(row[k])
+      return row
+    })
   }
 
   private finish(data: Row[], count?: number | null): Result {
