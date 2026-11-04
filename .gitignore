@@ -3,3 +3,4 @@ node_modules
 .nitro
 .wrangler
 .dev.vars
+.dev-issuer.json

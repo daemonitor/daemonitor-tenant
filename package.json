@@ -6,7 +6,9 @@
     "build": "nitro build",
     "dev": "nitro build && wrangler dev",
     "deploy": "nitro build && wrangler deploy",
-    "check": "tsx test/db.check.ts && tsx test/ingest.check.ts && tsx test/cloudflare.check.ts"
+    "check": "for f in test/*.check.ts; do tsx \"$f\" | grep \"check: ok\" || exit 1; done",
+    "dev:issuer": "tsx scripts/dev-issuer.ts",
+    "dev:token": "tsx scripts/dev-issuer.ts token"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251101.0",

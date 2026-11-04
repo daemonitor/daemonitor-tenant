@@ -1,0 +1,18 @@
+// node:sqlite standing in for a Durable Object's storage.sql, with the schema applied.
+import { DatabaseSync } from "node:sqlite"
+import { migrate } from "../server/fleet/schema"
+import { sqlClient } from "../server/fleet/db"
+
+export function freshSql(): SqlStorage {
+  const raw = new DatabaseSync(":memory:")
+  const sql = {
+    exec(q: string, ...args: any[]) {
+      const rows = raw.prepare(q).all(...args) as any[]
+      return { toArray: () => rows, one: () => rows[0] }
+    },
+  } as unknown as SqlStorage
+  migrate(sql)
+  return sql
+}
+
+export const freshDb = () => sqlClient(freshSql())

@@ -10,6 +10,8 @@ import { migrate } from "./schema"
 import { sqlClient, type Db } from "./db"
 import { ingest, type IngestRequest } from "./ingest"
 import { cloudflarePush, type CloudflarePushRequest } from "./cloudflare"
+import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
+import type { Identity } from "./jwt"
 import { HttpError, type FleetCtx } from "./ctx"
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
@@ -40,6 +42,19 @@ export class FleetDO extends DurableObject {
   /** A Cloudflare reporter's push. */
   async cloudflarePush(req: CloudflarePushRequest): Promise<RpcResult<unknown>> {
     return this.rpc("cloudflare push", () => cloudflarePush(this.db, this.fleetCtx, req))
+  }
+
+  /** The first owner, with the CLAIM_CODE set at deploy. */
+  async claimTenant(who: Identity, code: string): Promise<RpcResult<unknown>> {
+    return this.rpc("claim", () => claimTenant(this.db, who, code, (this.env as any).CLAIM_CODE))
+  }
+
+  async mintEnrollment(who: Identity, opts: { systemId?: string; name?: string; plugins?: string[] }, origin: string): Promise<RpcResult<unknown>> {
+    return this.rpc("enroll", () => mintEnrollment(this.db, who, opts, origin))
+  }
+
+  async claimEnrollment(body: unknown, clientIp: string | null, origin: string): Promise<RpcResult<unknown>> {
+    return this.rpc("enroll claim", () => claimEnrollment(this.db, body, clientIp, origin))
   }
 
   private async rpc<T>(what: string, fn: () => Promise<T>): Promise<RpcResult<T>> {

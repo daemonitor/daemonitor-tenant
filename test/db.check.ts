@@ -1,19 +1,12 @@
 // The query builder against real SQLite (node:sqlite standing in for the DO's
 // storage.sql), covering every builder call the alerting code makes.
 import assert from "node:assert/strict"
-import { DatabaseSync } from "node:sqlite"
 import { migrate } from "../server/fleet/schema"
 import { sqlClient } from "../server/fleet/db"
+import { freshSql } from "./sqlite"
 
-const raw = new DatabaseSync(":memory:")
-const sql = {
-  exec(q: string, ...args: any[]) {
-    const rows = raw.prepare(q).all(...args) as any[]
-    return { toArray: () => rows, one: () => rows[0] }
-  },
-} as unknown as SqlStorage
+const sql = freshSql()
 
-migrate(sql)
 migrate(sql) // a second run applies nothing
 const db = sqlClient(sql)
 

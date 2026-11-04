@@ -2,20 +2,12 @@
 // inventory reconciliation, carried-over worker metadata, and the zone's
 // daily rows with probes kept apart from traffic.
 import assert from "node:assert/strict"
-import { DatabaseSync } from "node:sqlite"
-import { migrate } from "../server/fleet/schema"
 import { sqlClient } from "../server/fleet/db"
+import { freshSql } from "./sqlite"
 import { cloudflarePush } from "../server/fleet/cloudflare"
 import { hashKey } from "../server/fleet/keys"
 
-const raw = new DatabaseSync(":memory:")
-const sql = {
-  exec(q: string, ...args: any[]) {
-    const rows = raw.prepare(q).all(...args) as any[]
-    return { toArray: () => rows, one: () => rows[0] }
-  },
-} as unknown as SqlStorage
-migrate(sql)
+const sql = freshSql()
 const db = sqlClient(sql)
 const ctx = { push: async () => {} }
 
