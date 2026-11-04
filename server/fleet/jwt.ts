@@ -65,7 +65,12 @@ export async function verifyToken(
   // The token's own alg header only ever picks among OUR keys, never the algorithm.
   if (!alg) throw new TokenError("unsupported key type")
 
-  const key = await crypto.subtle.importKey("jwk", jwk, alg.importAlg, false, ["verify"])
+  // Key material only. A published key's alg, key_ops or use can disagree with
+  // what this runtime expects (Node writes alg "Ed25519", workerd wants "EdDSA";
+  // a key exported from its private half says key_ops ["sign"]), and kty/crv
+  // already decide everything.
+  const material = jwk.kty === "OKP" ? { kty: jwk.kty, crv: jwk.crv, x: (jwk as any).x } : { kty: jwk.kty, crv: jwk.crv, x: (jwk as any).x, y: (jwk as any).y }
+  const key = await crypto.subtle.importKey("jwk", material, alg.importAlg, false, ["verify"])
   const ok = await crypto.subtle.verify(alg.verifyAlg, key, b64url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`))
   if (!ok) throw new TokenError("bad signature")
 
