@@ -14,6 +14,7 @@ import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
 import type { Identity } from "./jwt"
 import { atLeast, roleOf, scopeOf, type Scope } from "./access"
 import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
+import { insert, list, makeCtx, remove, update, type ListQuery } from "./data"
 import { ageOut, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "./maintenance"
 import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
@@ -154,6 +155,17 @@ export class FleetDO extends DurableObject {
       if (!JOBS.includes(job)) throw new HttpError(400, `Unknown job, expected one of ${JOBS.join(", ")}`)
       return this.runJobs(Date.now(), job)
     })
+  }
+
+  /** The app's own records: list, insert, update by id, delete by id or match. */
+  async data(who: Identity, op: "list" | "insert" | "update" | "delete", table: string, args: { id?: string; body?: any; query?: ListQuery }) {
+    return this.rpc(`data ${op} ${table}`, () => this.scoped(who, async (scope) => {
+      const c = await makeCtx(this.db, who, scope, scope.all ? scope.role : null)
+      if (op === "list") return list(c, table, args.query)
+      if (op === "insert") return insert(c, table, args.body)
+      if (op === "update") return update(c, table, String(args.id || ""), args.body)
+      return remove(c, table, args.body)
+    }))
   }
 
   private async scoped<T>(who: Identity, fn: (scope: Scope) => Promise<T>): Promise<T> {

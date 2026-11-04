@@ -92,7 +92,7 @@ const TABLES: Record<string, string> = {
   // Who may use this tenant. Replaces organization_members and account-level
   // share_grants: a tenant is one account.
   members: `
-    user_id uuid, email text, role text ! ='viewer', created_at ts ! =now`,
+    id uuid !, user_id uuid, email text, role text ! ='viewer', created_at ts ! =now`,
   // System and group shares, unchanged in meaning from share_grants.
   grants: `
     id uuid !, resource_type text !, resource_id text !, grantee_email text !,
@@ -178,6 +178,10 @@ function createTable(table: string, spec: string): string {
 /**
  * Schema versions, applied in order inside the DO's constructor. Append, never
  * edit: a tenant that already ran version N only runs what comes after it.
+ *
+ * Version 1 is built from TABLES above, which is fine only while no tenant is
+ * deployed. Before the first real deploy, freeze version 1 as literal SQL;
+ * after it, a change to TABLES must also be appended here as an ALTER.
  */
 export const MIGRATIONS: string[][] = [
   [...Object.entries(TABLES).map(([t, spec]) => createTable(t, spec)), ...INDEXES],
