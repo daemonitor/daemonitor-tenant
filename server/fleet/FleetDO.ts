@@ -14,6 +14,7 @@ import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
 import type { Identity } from "./jwt"
 import { scopeOf, type Scope } from "./access"
 import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
+import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
 import { HttpError, type FleetCtx } from "./ctx"
 
@@ -101,6 +102,34 @@ export class FleetDO extends DurableObject {
 
   async listNotifications(who: Identity, q: NotificationQuery) {
     return this.rpc("notification list", () => this.scoped(who, (s) => listNotifications(this.db, s, q)))
+  }
+
+  async historyBatch(who: Identity, range: string) {
+    return this.rpc("history batch", () => this.scoped(who, (s) => historyBatch(this.db, this.ctx.storage.sql, s, range)))
+  }
+
+  async overviewHistory(who: Identity, range: string) {
+    return this.rpc("overview history", () => this.scoped(who, (s) => overviewHistory(this.db, this.ctx.storage.sql, s, range)))
+  }
+
+  async serviceHistory(who: Identity, q: HistoryQuery) {
+    return this.rpc("service history", () => this.scoped(who, (s) => serviceHistory(this.db, s, q)))
+  }
+
+  async cfHistory(who: Identity, id: string, range: string) {
+    return this.rpc("cf history", () => this.scoped(who, (s) => cfHistory(this.db, s, id, range)))
+  }
+
+  async suspects(who: Identity, id: string, range: string) {
+    return this.rpc("suspects", () => this.scoped(who, (s) => suspects(this.db, s, id, range)))
+  }
+
+  async probes(who: Identity) {
+    return this.rpc("probes", () => this.scoped(who, (s) => probes(this.db, s)))
+  }
+
+  async systemEvents(who: Identity, q: EventsQuery) {
+    return this.rpc("system events", () => this.scoped(who, (s) => systemEvents(this.db, s, q)))
   }
 
   /**
