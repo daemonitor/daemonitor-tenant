@@ -714,6 +714,33 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                         ),
                     })
                 }
+                // A URL that was not indexed last report and is indexed now: one
+                // info alert. It isn't "newly indexed" on the next report, so it
+                // closes itself then and stays in the event history.
+                if (!body.error && list.length) {
+                    // The last report that carried URLs: a failed poll in between
+                    // has none, and must not hide the change.
+                    const { data: prevRows } = await client.from("client_state_history").select("data")
+                        .eq("unique_id", uniqueId).eq("system_id", system.id)
+                        .order("created_at", { ascending: false }).limit(5)
+                    const prevUrls: any[] = (prevRows || []).map((r: any) => r?.data?.urls).find((x: any) => Array.isArray(x) && x.length) || []
+                    const before = new Map<string, any>(prevUrls.map((u: any) => [u?.url, u]))
+                    for (const u of list) {
+                        const was = before.get(u?.url)
+                        if (u?.verdict !== "PASS" || !was || was.verdict === "PASS" || was.error) continue
+                        const days = Math.max(0, Math.floor((Date.now() - (Date.parse(u.since) || Date.now())) / 86400_000))
+                        addFinding({
+                            key: `indexed:${u.url}`.slice(0, 180),
+                            type: "info",
+                            title: `Indexed after ${days}d: ${String(u.url).replace(/^https?:\/\//, "")}`.slice(0, 160),
+                            message: [`was ${was.coverageState || "not indexed"}`, u.lastCrawlTime ? `crawled ${u.lastCrawlTime}` : ""].filter(Boolean).join("; ").slice(0, 200),
+                            detail: Object.fromEntries(
+                                [["URL", u.url], ["Coverage", u.coverageState], ["Was", was.coverageState], ["Last crawl", u.lastCrawlTime], ["Inspect", u.link]]
+                                    .filter(([, v]) => v).map(([k, v]) => [k, String(v)]),
+                            ),
+                        })
+                    }
+                }
                 if (body.authExpired) {
                     systemStatus = "error"
                     statusReason = `Indexing ${site}: Google rejected the service account (${String(body.error || "").slice(0, 100)})`

@@ -86,7 +86,7 @@ const fresh = new Date().toISOString()
 const url = (u: string, since: string, stuck = true) => ({ url: u, since, stuck, verdict: stuck ? "NEUTRAL" : "PASS", coverageState: stuck ? "Discovered - currently not indexed" : "Submitted and indexed", notify: null })
 
 await report({ site: "sc-domain:example.com", staleHours: 72, urls: [url("https://jobs.example.com/old", old), url("https://jobs.example.com/new", fresh)] })
-let o = await open()
+let o: any[] = await open()
 assert.equal(o.length, 1, "only the URL past staleHours alerts")
 assert.equal(o[0].source_detail, "idx:https://jobs.example.com/old")
 assert.match(o[0].title, /Not indexed after 5d/)
@@ -98,5 +98,17 @@ assert.ok((await open()).some((n: any) => n.source_detail === "idx:https://jobs.
 
 await report({ site: "sc-domain:example.com", staleHours: 72, urls: [url("https://jobs.example.com/old", old, false)] })
 assert.ok(!(await open()).some((n: any) => n.source_detail.startsWith("idx:")), "indexed resolves")
+o = await open()
+const became = o.filter((n: any) => n.source_detail === "idx-x" || n.source_detail.startsWith("indexed:"))
+assert.equal(became.length, 1, "one info alert when a URL becomes indexed")
+assert.equal(became[0].type, "info")
+assert.match(became[0].title, /^Indexed after 5d: jobs.example.com\/old/)
+
+await report({ site: "sc-domain:example.com", staleHours: 72, urls: [url("https://jobs.example.com/old", old, false)] })
+assert.ok(!(await open()).some((n: any) => n.source_detail.startsWith("indexed:")), "it closes on the next report")
+
+// a URL that was indexed all along raises nothing
+await report({ site: "sc-domain:example.com", staleHours: 72, urls: [url("https://jobs.example.com/old", old, false), url("https://jobs.example.com/new2", fresh, false)] })
+assert.ok(!(await open()).some((n: any) => n.source_detail.startsWith("indexed:")), "no alert for a URL first seen indexed")
 
 console.log("indexing check: ok")
