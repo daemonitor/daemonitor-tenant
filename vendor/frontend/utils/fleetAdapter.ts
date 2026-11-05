@@ -1696,6 +1696,7 @@ export function clientStateToService(cs: CS, sys: Sys, cluster?: ClusterMemberHi
     adsense: m.adsense,
     cost: m.cost,
     ga4: m.ga4,
+    indexing: m.indexing,
     // An account-level summary stands for its whole stack (zones, Pages projects,
     // workers), so clicking it should open the stack — its own service page shows
     // only the account totals.
