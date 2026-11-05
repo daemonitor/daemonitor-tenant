@@ -4,6 +4,7 @@
 // internal fetch doesn't carry the Worker's bindings.)
 import { handleMessage, type Call } from "~/server/utils/mcp"
 import { apiKeyOf, runOp } from "../utils/op"
+import { google } from "../utils/google"
 
 export default defineEventHandler(async (event) => {
   if (event.method !== "POST") {
@@ -18,6 +19,8 @@ export default defineEventHandler(async (event) => {
   // Refuse a bad key here rather than inside the first tool call.
   await runOp(event, "listKeys", {}, "key")
   const call: Call = (path, query = {}) => {
+    const g = path.match(/^\/api\/google\/(inspect|publish|metadata)$/)
+    if (g) return google(event, g[1], query)
     const [, kind, id, sub] = path.match(/^\/api\/external\/(fleet|systems|incidents|groups)(?:\/([^/]+))?(?:\/(history|events))?$/) || []
     const q = Object.fromEntries(Object.entries(query).filter(([, v]) => v !== undefined))
     const name =

@@ -690,6 +690,46 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 break;
             }
 
+            case "indexing": {
+                // Google indexing of a URL list (IndexingPlugin). One warning per
+                // URL Google still hasn't indexed `staleHours` after it appeared,
+                // keyed by URL so it closes on its own once the page is indexed.
+                // Auth and API failures are errors, like ga4.
+                const site = body.site || "Search Console"
+                const staleMs = (Number(body.staleHours) || 72) * 3600_000
+                const list: any[] = Array.isArray(body.urls) ? body.urls : []
+                const late = list.filter((u) => u?.stuck && Date.now() - (Date.parse(u.since) || Date.now()) > staleMs)
+                const failed = list.filter((u) => u?.error)
+                for (const u of late) {
+                    const days = Math.floor((Date.now() - Date.parse(u.since)) / 86400_000)
+                    const sent = u.notify?.updated ? `last submitted ${u.notify.updated}` : u.notify === null ? "Indexing API has no submit on record" : ""
+                    addFinding({
+                        key: `idx:${u.url}`.slice(0, 180),
+                        type: "warning",
+                        title: `Not indexed after ${days}d: ${String(u.url).replace(/^https?:\/\//, "")}`.slice(0, 160),
+                        message: [u.coverageState, u.lastCrawlTime ? `last crawl ${u.lastCrawlTime}` : "never crawled", sent].filter(Boolean).join("; ").slice(0, 200),
+                        detail: Object.fromEntries(
+                            [["URL", u.url], ["Coverage", u.coverageState], ["Last crawl", u.lastCrawlTime], ["Fetch", u.pageFetchState], ["Inspect", u.link]]
+                                .filter(([, v]) => v).map(([k, v]) => [k, String(v)]),
+                        ),
+                    })
+                }
+                if (body.authExpired) {
+                    systemStatus = "error"
+                    statusReason = `Indexing ${site}: Google rejected the service account (${String(body.error || "").slice(0, 100)})`
+                } else if (body.error) {
+                    systemStatus = "error"
+                    statusReason = `Indexing ${site}: ${String(body.error).slice(0, 140)}`
+                } else if (late.length) {
+                    systemStatus = "warning"
+                    statusReason = `${late.length} of ${list.length} URL${list.length === 1 ? "" : "s"} not indexed after ${Math.round(staleMs / 3600_000)}h`
+                } else if (failed.length) {
+                    systemStatus = "warning"
+                    statusReason = `${failed.length} URL${failed.length === 1 ? "" : "s"} failed inspection (${String(failed[0].error).slice(0, 80)})`
+                }
+                break
+            }
+
             case "nagios": {
                 // A Nagios-compatible check. The check itself decided the state
                 // with its own thresholds, so the server only maps it. UNKNOWN
@@ -987,7 +1027,8 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
         //
         // A finding the service has stopped reporting is over: close it, so the
         // event reads as history and the same finding alerts again if it returns.
-        if (["web", "wordpress", "logwatch", "appactivity"].includes(dataType)) {
+        // A failed indexing poll carries no URLs, which must not read as "all indexed".
+        if (["web", "wordpress", "logwatch", "appactivity", "indexing"].includes(dataType) && !(dataType === "indexing" && body.error)) {
             await resolveClearedFindings(client, system, dataType, uniqueId, findings.map((f) => f.key))
         }
         if (findings.length) {

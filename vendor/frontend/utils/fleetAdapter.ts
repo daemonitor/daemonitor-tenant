@@ -1075,6 +1075,38 @@ function mapByType(cs: CS): Mapped {
       }
     }
 
+    case 'indexing': {
+      // Google indexing of a URL list. Units are the URLs, worst first; the
+      // per-URL alerts carry the detail and the GSC inspect link.
+      const urls: any[] = Array.isArray(d.urls) ? d.urls : []
+      const staleMs = (Number(d.staleHours) || 72) * 3600_000
+      const late = (u: any) => u.stuck && Date.now() - (Date.parse(u.since) || Date.now()) > staleMs
+      const lvl = (u: any): Level => (u.error || late(u) ? 'warn' : 'ok')
+      return {
+        ...base,
+        name: d.name || `Indexing · ${d.site || ''}`,
+        kindLabel: 'Google indexing',
+        badge: 'index',
+        metrics: d.error
+          ? [metric('ERROR', String(d.error), 'crit')]
+          : [
+              metric('CHECKED', String(d.checked ?? urls.length), 'ok'),
+              metric('INDEXED', String(d.indexed ?? 0), 'ok'),
+              metric('NOT INDEXED', String(d.stuck ?? 0), urls.some(late) ? 'warn' : 'ok'),
+            ],
+        unitLabel: urls.length ? 'URLS' : '',
+        units: urls
+          .map((u) => ({
+            name: String(u.url || '').replace(/^https?:\/\/[^/]+/, '') || String(u.url),
+            state: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : 'not indexed',
+            value: u.error ? String(u.error).slice(0, 60) : String(u.coverageState || ''),
+            level: lvl(u),
+            kind: 'URL',
+          }))
+          .sort((a, b) => (a.level === b.level ? 0 : a.level === 'warn' ? -1 : 1)),
+      }
+    }
+
     case 'adsense': {
       // No figures while the plugin is reporting an error: the last good
       // numbers are gone from the row, and zeroes would read as "earned nothing".
@@ -1442,6 +1474,9 @@ export function serviceLinks(cs: CS): ServiceLink[] {
       if (href) admin(`${COST_PROVIDER_LABEL[d.provider] || d.provider} billing`, href, 'i-heroicons-banknotes-20-solid')
       break
     }
+    case 'indexing':
+      if (d.site) admin('Search Console', `https://search.google.com/search-console?resource_id=${encodeURIComponent(d.site)}`, 'i-heroicons-magnifying-glass-20-solid')
+      break
     case 'ga4':
       admin('Google Analytics', 'https://analytics.google.com/', 'i-heroicons-chart-bar-20-solid')
       break
@@ -1582,6 +1617,8 @@ export function clientStateToService(cs: CS, sys: Sys, cluster?: ClusterMemberHi
     : cs.type === 'nagios' ? Math.max(300, (3 * (Number(cs.data?.intervalMs) || 60000)) / 1000)
     // cost polls hourly by default: three missed polls.
     : cs.type === 'cost' ? Math.max(1800, (3 * (Number(cs.data?.intervalMs) || 3600000)) / 1000)
+    // indexing polls every 6 hours by default: two missed polls.
+    : cs.type === 'indexing' ? Math.max(3600, (2 * (Number(cs.data?.intervalMs) || 21600000)) / 1000)
     : 300
   let statusWord = cs.status_reason
     ? String(cs.status_reason).slice(0, 80).replace(AWS_HOST_SUFFIX, '')
