@@ -9,6 +9,10 @@
  * streams the rows to the tenant's owner-only /api/tenant/import in batches.
  * Each table is emptied on its first batch, so a rerun replaces, never doubles.
  *
+ * --since <iso> is the catch-up after agents move to the tenant: only the
+ * time-series rows Postgres took after that moment, added without emptying
+ * anything (the tenant already has its own newer rows). Other tables are skipped.
+ *
  * It signs its own owner tokens with TENANT_SIGNING_JWK (daemonitor.com's key),
  * issuer DAEMONITOR_ISSUER (default https://daemonitor.com). The tenant must be
  * claimed by the owner: --claim <CLAIM_CODE> does that first on a fresh one.
@@ -21,7 +25,7 @@ import { createInterface } from "node:readline"
 import { parseArgs } from "node:util"
 import { COLUMNS } from "../server/fleet/schema"
 
-const { values: o } = parseArgs({ options: { owner: { type: "string" }, tenant: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, claim: { type: "string" } } })
+const { values: o } = parseArgs({ options: { owner: { type: "string" }, tenant: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, claim: { type: "string" }, since: { type: "string" } } })
 const U = o.owner || ""
 if (!/^[0-9a-f-]{36}$/.test(U) || !o.tenant) throw new Error("usage: --owner <uuid> --tenant <origin> [--only a,b] [--skip a,b]")
 const TENANT = new URL(o.tenant).origin
@@ -125,15 +129,23 @@ if (o.claim) {
   console.log(`claim: ${res.status} ${(await res.text()).slice(0, 200)}`)
 }
 
+// The tables that only grow, and the column that says when a row arrived.
+const GROWING: Record<string, string> = {
+  client_state_history: "created_at", notifications: "created_at", cluster_service_history: "created_at", events: "created_at",
+}
+const SINCE = o.since ? new Date(o.since).toISOString() : null
+
 const only = o.only?.split(",")
 const skip = o.skip?.split(",") || []
-for (const [table, sql] of TABLES) {
+for (const [table, base] of TABLES) {
   if ((only && !only.includes(table)) || skip.includes(table)) continue
+  if (SINCE && !GROWING[table]) continue
+  const sql = SINCE ? `select * from (${base}) q where (q.row_to_json::json->>'${GROWING[table]}')::timestamptz >= '${SINCE}'` : base
   const started = Date.now()
   let batch: object[] = []
   let bytes = 0
   let total = 0
-  let first = true
+  let first = !SINCE
   for await (const line of query(sql)) {
     batch.push(normalise(table, JSON.parse(line)))
     bytes += line.length
@@ -146,7 +158,7 @@ for (const [table, sql] of TABLES) {
       process.stdout.write(`\r${table}: ${total}`)
     }
   }
-  if (batch.length || first) await send(table, batch, first)
+  if (batch.length || first) await send(table, batch, first && !SINCE)
   total += batch.length
   console.log(`\r${table}: ${total} rows in ${((Date.now() - started) / 1000).toFixed(1)}s`)
 }

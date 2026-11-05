@@ -5,3 +5,4 @@ node_modules
 .dev.vars
 .dev-issuer.json
 .scratch
+wrangler.operator.jsonc
