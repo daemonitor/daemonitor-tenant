@@ -3,7 +3,7 @@
   "main": "worker/index.mjs",
   "compatibility_date": "2025-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  "alias": { "~": "../frontend" },
+  "alias": { "~": "./vendor/frontend" },
   // The monthly archive streams a month of reports through gzip in one alarm.
   "limits": { "cpu_ms": 300000 },
   "durable_objects": {

@@ -2,6 +2,6 @@
   "extends": "./.nitro/types/tsconfig.json",
   "compilerOptions": {
     "types": ["@cloudflare/workers-types"],
-    "paths": { "~/*": ["../frontend/*"] }
+    "paths": { "~/*": ["./vendor/frontend/*"] }
   }
 }

@@ -11,6 +11,6 @@ export default defineNitroConfig({
     // the frontend checkout next door.
     // ponytail: cross-repo import; move them into common/ once the frontend is
     // on this stack and nothing else imports them from there.
-    "~": fileURLToPath(new URL("../frontend", import.meta.url)),
+    "~": fileURLToPath(new URL("./vendor/frontend", import.meta.url)),
   },
 })
