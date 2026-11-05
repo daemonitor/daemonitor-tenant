@@ -170,28 +170,23 @@ const LEVEL_EMOJI: Record<string, string> = {
     info: ":large_blue_circle:",
 }
 
-/**
- * Post one notification to a channel.
- *
- * `text` is set alongside the blocks because Slack uses it for the notification
- * preview and for clients that can't render blocks — blocks alone show up blank
- * in a phone banner.
- */
-export async function postSlackMessage(opts: {
+interface SlackAlert {
     token: string
     channel: string
     title: string
     message: string
     level: string
     url?: string
-}): Promise<void> {
-    const emoji = LEVEL_EMOJI[opts.level] || LEVEL_EMOJI.info
+}
+
+function alertBlocks(opts: Omit<SlackAlert, "token" | "channel">, emoji: string, title: string, footer?: string): any[] {
     const blocks: any[] = [
         {
             type: "section",
-            text: { type: "mrkdwn", text: `${emoji} *${escapeSlack(opts.title)}*\n${escapeSlack(opts.message)}` },
+            text: { type: "mrkdwn", text: `${emoji} *${escapeSlack(title)}*\n${escapeSlack(opts.message)}` },
         },
     ]
+    if (footer) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: footer }] })
     if (opts.url) {
         blocks.push({
             type: "actions",
@@ -204,12 +199,60 @@ export async function postSlackMessage(opts: {
             ],
         })
     }
-    await slackCall("chat.postMessage", opts.token, {
+    return blocks
+}
+
+/**
+ * Post one notification to a channel. Returns where it landed, so the message
+ * can be edited when the alert resolves.
+ *
+ * `text` is set alongside the blocks because Slack uses it for the notification
+ * preview and for clients that can't render blocks — blocks alone show up blank
+ * in a phone banner.
+ */
+export async function postSlackMessage(opts: SlackAlert): Promise<{ channel: string; ts: string }> {
+    const emoji = LEVEL_EMOJI[opts.level] || LEVEL_EMOJI.info
+    const data = await slackCall("chat.postMessage", opts.token, {
         channel: opts.channel,
         text: `${opts.title} — ${opts.message}`,
-        blocks,
+        blocks: alertBlocks(opts, emoji, opts.title),
         unfurl_links: false,
         unfurl_media: false,
+    })
+    return { channel: String(data?.channel || opts.channel), ts: String(data?.ts || "") }
+}
+
+/** "45s", "12m", "2h 14m", "3d 4h". */
+export function fmtDuration(ms: number): string {
+    const s = Math.max(0, Math.round(ms / 1000))
+    if (s < 60) return `${s}s`
+    const m = Math.floor(s / 60)
+    if (m < 60) return `${m}m`
+    const h = Math.floor(m / 60)
+    if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`
+    const d = Math.floor(h / 24)
+    return h % 24 ? `${d}d ${h % 24}h` : `${d}d`
+}
+
+/** Slack renders <!date^…> in each reader's own time zone; the text after | is the fallback. */
+const slackDate = (iso: string) => {
+    const t = Math.floor(Date.parse(iso) / 1000)
+    return `<!date^${t}^{date_short_pretty} {time}|${new Date(t * 1000).toISOString().replace("T", " ").slice(0, 16)} UTC>`
+}
+
+/** The footer a resolved alert's message gets: when it started, how long it lasted, when it cleared. */
+export function resolvedFooter(startedAt: string, resolvedAt: string): string {
+    return `:white_check_mark: Resolved ${slackDate(resolvedAt)} · started ${slackDate(startedAt)} · lasted *${fmtDuration(Date.parse(resolvedAt) - Date.parse(startedAt))}*`
+}
+
+/** Rewrite a posted alert as resolved: same text, a check mark, and the outage's start and length. */
+export async function resolveSlackMessage(opts: SlackAlert & { ts: string; startedAt: string; resolvedAt: string }): Promise<void> {
+    const lasted = fmtDuration(Date.parse(opts.resolvedAt) - Date.parse(opts.startedAt))
+    await slackCall("chat.update", opts.token, {
+        channel: opts.channel,
+        ts: opts.ts,
+        text: `Resolved after ${lasted}: ${opts.title} — ${opts.message}`,
+        blocks: alertBlocks(opts, ":white_check_mark:", `Resolved: ${opts.title}`, resolvedFooter(opts.startedAt, opts.resolvedAt)),
     })
 }
 

@@ -11,7 +11,7 @@
  * Delivery is best-effort and never blocks ingest: a channel that errors is
  * logged and skipped, because a Slack outage must not fail a metrics push.
  */
-import { postSlackMessage } from "~/server/utils/slack"
+import { postSlackMessage, resolveSlackMessage } from "~/server/utils/slack"
 import { deliverWebhook } from "~/server/utils/webhook"
 import type { FleetCtx } from "./ctx"
 
@@ -371,15 +371,19 @@ async function channelsFor(client: any, system: NotifySystem, kind?: string): Pr
     }
 }
 
-const RESOLVED_FIELDS = "id, title, message, type, source, source_detail, metadata"
+const RESOLVED_FIELDS = "id, title, message, type, source, source_detail, metadata, created_at, resolved_at"
 
 /**
  * Tell webhooks an alert cleared, with the same id as its alert.raised event,
- * so whatever acted on the alert can close it. Slack only hears about faults:
- * a channel that also posts every recovery is twice as loud to read.
+ * so whatever acted on the alert can close it. Slack gets no new message for a
+ * recovery (a channel that also posts every recovery is twice as loud to read):
+ * the alert's own message is edited instead, to say it resolved, when it
+ * started and how long it lasted.
  */
 async function fanOutResolved(client: any, system: NotifySystem, rows: any[]): Promise<void> {
-    const hooks = await channelsFor(client, system, "webhook")
+    const all = await channelsFor(client, system)
+    await editSlackResolved(system, rows, all.filter((c) => c.kind === "slack"))
+    const hooks = all.filter((c) => c.kind === "webhook")
     if (!hooks.length) return
     const base = process.env.APP_URL?.replace(/\/$/, "")
     const delivered = new Set<string>()
@@ -410,6 +414,29 @@ async function fanOutResolved(client: any, system: NotifySystem, rows: any[]): P
     }
 }
 
+/** Rewrite each resolved alert's Slack messages (metadata.slack, recorded when it was raised). */
+async function editSlackResolved(system: NotifySystem, rows: any[], slack: any[]): Promise<void> {
+    const byId = new Map(slack.map((c) => [c.id, c]))
+    for (const row of rows) {
+        const posted: any[] = Array.isArray(row.metadata?.slack) ? row.metadata.slack : []
+        for (const p of posted) {
+            const token = byId.get(p.ch)?.config?.bot_token
+            if (!token || !p.ts) continue
+            const base = systemUrl(row.metadata?.serviceId || system.id)
+            try {
+                await resolveSlackMessage({
+                    token, channel: p.channel, ts: p.ts,
+                    title: row.title, message: row.message, level: row.type,
+                    url: base ? `${base}/events/${row.id}` : undefined,
+                    startedAt: row.created_at, resolvedAt: row.resolved_at || new Date().toISOString(),
+                })
+            } catch (e: any) {
+                console.error(`notify: slack resolve edit on channel ${p.ch} failed:`, e?.message || e)
+            }
+        }
+    }
+}
+
 /** Delivery channels for everyone entitled to hear about this system, filtered by severity. */
 async function fanOutToChannels(input: NotifyInput, title: string, message: string, eventId?: string): Promise<void> {
     const { client, system } = input
@@ -426,6 +453,8 @@ async function fanOutToChannels(input: NotifyInput, title: string, message: stri
     // Deliver once per destination. Deduped after the severity filter, so a
     // channel that passes still wins over one that doesn't.
     const delivered = new Set<string>()
+    // Where each Slack copy landed, so resolving can edit it in place.
+    const posted: { ch: string; channel: string; ts: string }[] = []
 
     for (const ch of channels) {
         if (rank < (RANK[ch.min_level] ?? 2)) continue
@@ -439,7 +468,8 @@ async function fanOutToChannels(input: NotifyInput, title: string, message: stri
                 const token = ch.config?.bot_token
                 const channel = ch.config?.channel_id
                 if (!token || !channel) continue
-                await postSlackMessage({ token, channel, title, message, level: input.type, url })
+                const at = await postSlackMessage({ token, channel, title, message, level: input.type, url })
+                if (at.ts) posted.push({ ch: ch.id, ...at })
             } else if (ch.kind === "webhook") {
                 await deliverWebhook(ch.config, {
                     event: "alert.raised",
@@ -460,6 +490,16 @@ async function fanOutToChannels(input: NotifyInput, title: string, message: stri
             // One bad channel must not stop the others, or the ingest request.
             console.error(`notify: ${ch.kind} channel ${ch.id} failed:`, e?.message || e)
         }
+    }
+    if (posted.length && eventId) {
+        const metadata = {
+            ...(input.service ? { service: input.service } : {}),
+            ...(input.detail ? { detail: input.detail } : {}),
+            ...(input.serviceId ? { serviceId: input.serviceId } : {}),
+            slack: posted,
+        }
+        const { error } = await client.from("notifications").update({ metadata }).eq("id", eventId)
+        if (error) console.error("notify: could not record slack message ids:", error.message)
     }
 }
 
