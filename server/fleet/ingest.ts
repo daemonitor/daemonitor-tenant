@@ -890,7 +890,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 const st = unhealthy || badExit ? "error" : !running ? "warning" : "online"
                 const reason = unhealthy ? "unhealthy" : !running ? (c.state || "stopped") : null
                 return {
-                    unique_id: `lxc-${host}-${c.name}`,
+                    unique_id: `lxc-${host}-${c.id || c.name}`,
                     system_id: system.id,
                     type: "lxc-container",
                     data: { container: c, host, engine: "lxc" },

@@ -4,7 +4,7 @@
 
 import type { Level, Service, Unit, Metric, EventLine, ServiceLink, DiskInfo, ProcessInfo, CloudflareDetail, AdsenseDetail, Ga4Detail, CostDetail } from '~/types/fleet'
 // Explicit import (not just Nuxt app auto-import): this module is also imported
-// from Nitro server routes (server/utils/fleetCompute.ts), and Nitro does not
+// from the tenant (tenant/server/fleet/external.ts), and the server does not
 // auto-import app-level utils/, so these would be undefined server-side otherwise.
 import { cpuLevel, memLevel, diskLevel, fmtAge, fmtCores, containerCpuLevel, parseQuantity, webThrottled } from '~/utils/fleet'
 
@@ -827,10 +827,20 @@ function mapByType(cs: CS): Mapped {
         hasBars: true,
         cpu: Math.round(Number(c.cpu) || 0),
         mem: 0, // container mem is bytes, not a %, so surface it as a metric
+        // Same rx/tx shape as the os plugin; absent on the agent's first poll.
+        ...(() => {
+          const nw = c.network
+          if (!nw || typeof nw.rxRate !== 'number') return {}
+          const netIn = Number(nw.rxRate) || 0, netOut = Number(nw.txRate) || 0
+          return { net: netIn + netOut, netIn, netOut }
+        })(),
         processes: normProcesses(c.processes),
         metrics: [
           metric('STATE', state.toUpperCase(), containerLevel(c)),
           metric('MEM', fmtBytes(c.mem), 'ok'),
+          ...(c.network && typeof c.network.rxRate === 'number'
+            ? [metric('NET', fmtRate((Number(c.network.rxRate) || 0) + (Number(c.network.txRate) || 0)), 'ok')]
+            : []),
           metric('RESTARTS', String(c.restarts ?? 0), (Number(c.restarts) || 0) > 5 ? 'warn' : 'ok'),
         ],
       }

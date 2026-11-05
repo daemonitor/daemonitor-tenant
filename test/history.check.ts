@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { freshSql } from "./sqlite"
 import { sqlClient } from "../server/fleet/db"
 import { scopeOf } from "../server/fleet/access"
-import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, systemEvents } from "../server/fleet/history"
+import { barSeries, cfHistory, historyBatch, overviewHistory, probes, serviceHistory, systemEvents } from "../server/fleet/history"
 
 const sql = freshSql()
 const db = sqlClient(sql)
@@ -74,5 +74,14 @@ assert.deepEqual((await probes(db, grp)).rows, [], "the zone isn't in the grante
 // a system's event log: members yes, group grantees no
 assert.equal((await systemEvents(db, owner, { systemId: B })).total, 1)
 await assert.rejects(systemEvents(db, grp, { systemId: B }), /System not found/)
+
+// An lxc container's net comes from data.container.network; a sample without it stays null.
+assert.deepEqual(
+  barSeries("lxc-container", [
+    { data: { container: { cpu: 5, network: { rxRate: 100, txRate: 20 } } } },
+    { data: { container: { cpu: 5 } } },
+  ] as any).map((x) => x.net),
+  [120, null],
+)
 
 console.log("history.check: ok")

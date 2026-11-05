@@ -64,7 +64,8 @@ export function barSeries(type: string, samples: Sample[]) {
         net: d.network ? (Number(d.network.rxRate) || 0) + (Number(d.network.txRate) || 0) : null,
       })
     } else {
-      out.push({ cpu: directCpu(type, d), mem: null, disk: null, net: null })
+      const nw = type === "lxc-container" ? d.container?.network : null
+      out.push({ cpu: directCpu(type, d), mem: null, disk: null, net: nw ? (Number(nw.rxRate) || 0) + (Number(nw.txRate) || 0) : null })
     }
   }
   return out
@@ -308,6 +309,13 @@ export async function serviceHistory(db: Db, scope: Scope, q: HistoryQuery) {
       }
     } else {
       cpu.push(directCpu(cs.type, d))
+      if (cs.type === "lxc-container") {
+        const rx = Number(d?.container?.network?.rxRate) || 0
+        const tx = Number(d?.container?.network?.txRate) || 0
+        netIn.push(rx)
+        netOut.push(tx)
+        net.push(rx + tx)
+      }
       if (cs.type === "docker" || cs.type === "lxc") {
         for (const c of Array.isArray(d?.containers) ? d.containers : []) {
           const name = String(c?.service || c?.name || "")
@@ -316,7 +324,7 @@ export async function serviceHistory(db: Db, scope: Scope, q: HistoryQuery) {
           if (!b) boxes.set(name, (b = { cpu: Array(samples).fill(0), mem: Array(samples).fill(0), net: Array(samples).fill(0) }))
           b.cpu[samples] = Number(c.cpu) || 0
           b.mem[samples] = Number(c.mem) || 0
-          b.net[samples] = (Number(c.netIn) || 0) + (Number(c.netOut) || 0)
+          b.net[samples] = (Number(c.netIn ?? c.network?.rxRate) || 0) + (Number(c.netOut ?? c.network?.txRate) || 0)
         }
         samples++
         for (const b of boxes.values()) for (const k of ["cpu", "mem", "net"] as const) if (b[k].length < samples) b[k].push(0)
