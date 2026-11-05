@@ -123,6 +123,8 @@ export interface Service {
   ga4?: Ga4Detail
   // Spend figures (cost services, and groups made only of them).
   cost?: CostDetail
+  // Google indexing of a URL list (indexing services only).
+  indexing?: IndexingDetail
   // User has hidden this entity from the fleet views (local preference). Hidden
   // items are filtered out unless the global "show hidden" toggle is on, in
   // which case they render dimmed.
@@ -150,6 +152,31 @@ export interface AdsenseDetail {
   accountId?: string
   /** The same figures per site, biggest earner first. Absent from older agents. */
   sites?: AdsenseSite[]
+}
+
+/** One URL in an indexing report: Search Console's inspection plus when it entered the list. */
+export interface IndexingUrl {
+  url: string
+  verdict: string
+  coverageState: string
+  /** Earlier of the sitemap lastmod and the first poll that listed it. */
+  since: string
+  stuck: boolean
+  lastCrawlTime?: string
+  pageFetchState?: string
+  googleCanonical?: string
+  userCanonical?: string
+  /** GSC inspection page (carries an opaque id). */
+  link?: string
+  /** Indexing API history: null = Google has none on record. */
+  notify?: { updated?: string; deleted?: string } | null
+  error?: string
+}
+
+export interface IndexingDetail {
+  site: string
+  staleHours: number
+  urls: IndexingUrl[]
 }
 
 /** What one provider (or a group of them) is billing. Amounts in `currency`. */

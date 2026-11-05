@@ -1104,6 +1104,7 @@ function mapByType(cs: CS): Mapped {
             kind: 'URL',
           }))
           .sort((a, b) => (a.level === b.level ? 0 : a.level === 'warn' ? -1 : 1)),
+        indexing: d.error ? undefined : { site: String(d.site || ''), staleHours: Number(d.staleHours) || 72, urls },
       }
     }
 
