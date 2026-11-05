@@ -56,6 +56,11 @@ assert.deepEqual(ids(await listSystems(db, sysGrantee)), [A])
 assert.deepEqual(ids(await listSystems(db, grpGrantee)), [B], "a group grant shows the member's system")
 assert.deepEqual(ids(await listClientStates(db, sysGrantee)), sorted(a1, a2))
 assert.deepEqual(ids(await listClientStates(db, grpGrantee)), [b1], "only the grouped service")
+
+// An archived system's services leave the list with it.
+await db.from("systems").update({ archived: true }).eq("id", B)
+assert.ok(!ids(await listClientStates(db, owner)).includes(b1), "archived system's service is hidden")
+await db.from("systems").update({ archived: false }).eq("id", B)
 assert.deepEqual((await listNotifications(db, owner, {})).unreadCount, 2)
 assert.deepEqual((await listNotifications(db, sysGrantee, {})).notifications.map((n: any) => n.system_id), [A])
 assert.deepEqual((await listNotifications(db, grpGrantee, {})).notifications, [], "group grantees don't get system alerts")

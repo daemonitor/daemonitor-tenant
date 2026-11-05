@@ -27,9 +27,12 @@ export async function listSystems(db: Db, scope: Scope) {
 export async function listClientStates(db: Db, scope: Scope) {
   let q = db.from("client_states").select("*").eq("archived", false).order("updated_at", { ascending: false })
   if (!scope.all) q = q.in("system_id", [...scope.systems])
-  const { data, error } = await q
+  const [{ data, error }, { data: gone }] = await Promise.all([q, db.from("systems").select("id").eq("archived", true)])
   if (error) throw new Error(error.message)
-  const rows = (data || []).filter((r: any) => seesService(scope, r))
+  // An archived system takes its services with it: they stop reporting, and
+  // left listed they would turn OFFLINE on the board.
+  const archived = new Set((gone || []).map((s: any) => s.id))
+  const rows = (data || []).filter((r: any) => !archived.has(r.system_id) && seesService(scope, r))
   return { success: true, items: rows.flatMap(expandCloudflare) }
 }
 
