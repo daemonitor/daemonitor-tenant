@@ -10,8 +10,16 @@ export function apiKeyOf(event: H3Event): string {
   return getRequestHeader(event, "x-api-key") || getRequestHeader(event, "authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] || ""
 }
 
-/** Run one named operation in the fleet DO, as a session, an API key, or nobody (agents). */
+// A daemonitor.com token is a JWT; API keys never have dots.
+const JWT = /^eyJ[\w-]*\.[\w-]+\.[\w-]+$/
+
+/**
+ * Run one named operation in the fleet DO, as a session, an API key, or nobody
+ * (agents). A read route that takes a key also takes a daemonitor.com token, so
+ * daemonitor.com's MCP can read every tenant as the person asking.
+ */
 export async function runOp(event: H3Event, name: string, args: unknown, mode: AuthMode) {
+  if (mode === "key" && !getRequestHeader(event, "x-api-key") && JWT.test(apiKeyOf(event))) mode = "session"
   const auth: OpAuth =
     mode === "session" ? { kind: "session", who: await requireIdentity(event) }
     : mode === "none" ? { kind: "none" }
