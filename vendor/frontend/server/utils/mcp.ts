@@ -21,7 +21,8 @@ export const SERVER_INFO = { name: "daemonitor", version: "1.0.0" }
 const INSTRUCTIONS = `daemonitor monitors hosts, containers, websites, office networks and cloud services.
 Start with fleet_status: it lists every problem across the fleet with its reason.
 Levels: ok, warn, crit, standby (correctly idle, e.g. a cluster follower). A service that stopped reporting is crit with an OFFLINE status.
-Use get_system for one host's services, get_service_history for a trend, list_events for a system's past alerts, list_incidents for the operator's own write-ups.`
+Use get_system for one host's services, get_service_history for a trend, list_events for a system's past alerts, list_incidents for the operator's own write-ups.
+Where the tenant holds a Google service account: inspect_url asks Search Console whether Google indexed a page, submit_url sends an Indexing API notification, indexing_history reads what Google recorded of past submits. A 200 from submit_url does not mean Google will crawl; inspect_url later is the check.`
 
 // ---- shaping ---------------------------------------------------------------
 
@@ -136,6 +137,45 @@ export const TOOLS = [
     annotations: readOnly,
   },
   {
+    name: "inspect_url",
+    title: "Inspect a URL in Search Console",
+    description: "Google's view of one page: verdict, coverage state (e.g. \"Discovered - currently not indexed\"), last crawl time, fetch state, Google's chosen canonical, and the Search Console link for this inspection.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full page URL." },
+        site: { type: "string", description: "Search Console property, e.g. sc-domain:example.com. Defaults to the tenant's configured property." },
+      },
+      required: ["url"],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  {
+    name: "submit_url",
+    title: "Submit a URL to the Google Indexing API",
+    description: "Send URL_UPDATED (new or changed page) or URL_DELETED for one URL inside the configured property. Needs a manage key. Counts against the 200 a day quota. Google accepts calls it then ignores, so check with inspect_url later.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full page URL." },
+        type: { type: "string", enum: ["URL_UPDATED", "URL_DELETED"], description: "Default URL_UPDATED." },
+      },
+      required: ["url"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "indexing_history",
+    title: "Indexing API history for a URL",
+    description: "The last URL_UPDATED and URL_DELETED notifications Google has on record for one URL. recorded: false means Google holds none, even if submits returned 200.",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", description: "Full page URL." } },
+      required: ["url"],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  {
     name: "list_groups",
     title: "Groups",
     description: "The operator's groups (an app, a site, a cluster) with each member service's level, so you can see which app a problem belongs to.",
@@ -233,6 +273,15 @@ async function runTool(name: string, args: any, call: Call): Promise<unknown> {
         })),
       }
     }
+
+    case "inspect_url":
+      return call("/api/google/inspect", { url: args.url, site: args.site })
+
+    case "submit_url":
+      return call("/api/google/publish", { url: args.url, type: args.type })
+
+    case "indexing_history":
+      return call("/api/google/metadata", { url: args.url })
 
     case "list_groups": {
       const [groups, fleet] = await Promise.all([call("/api/external/groups"), call("/api/external/fleet")])

@@ -12,7 +12,8 @@ for f in \
   frontend/server/utils/metrics.ts frontend/server/utils/slack.ts frontend/server/utils/supabase.ts \
   frontend/server/utils/webhook.ts frontend/types/fleet.ts frontend/utils/clusterEval.ts \
   frontend/utils/deviceAlert.ts frontend/utils/fleet.ts frontend/utils/fleetAdapter.ts \
-  frontend/utils/groupTree.ts frontend/utils/suspectNetworks.ts common/types/fleet.ts
+  frontend/utils/groupTree.ts frontend/utils/suspectNetworks.ts common/types/fleet.ts \
+  plugins/plugins/monitoring/googleIndexing.ts
 do
   mkdir -p "vendor/$(dirname "$f")"
   cp "$root/$f" "vendor/$f"
