@@ -58,6 +58,8 @@ export interface ServiceLink {
 
 export interface Service {
   id: string
+  /** client_states.unique_id: what notify stamps as metadata.service on the alerts this service raised. */
+  uniqueId?: string
   name: string
   stack: string // stack id
   env: 'production' | 'staging' | 'shared'

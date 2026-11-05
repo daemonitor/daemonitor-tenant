@@ -202,3 +202,15 @@ export function parseSitemap(xml: string): { url: string; lastmod?: string }[] {
   }
   return out.sort((a, b) => (Date.parse(b.lastmod || "") || 0) - (Date.parse(a.lastmod || "") || 0))
 }
+
+/** A sitemap index -> its child sitemaps, most recently changed first. */
+export function parseSitemapIndex(xml: string): { url: string; lastmod?: string }[] {
+  if (!/<sitemapindex[\s>]/.test(xml)) return []
+  const out: { url: string; lastmod?: string }[] = []
+  for (const m of xml.matchAll(/<sitemap>([\s\S]*?)<\/sitemap>/g)) {
+    const loc = /<loc>\s*([^<]+?)\s*<\/loc>/.exec(m[1])?.[1]
+    const lastmod = /<lastmod>\s*([^<]+?)\s*<\/lastmod>/.exec(m[1])?.[1]
+    if (loc) out.push({ url: loc.replace(/&amp;/g, "&"), ...(lastmod ? { lastmod } : {}) })
+  }
+  return out.sort((a, b) => (Date.parse(b.lastmod || "") || 0) - (Date.parse(a.lastmod || "") || 0))
+}

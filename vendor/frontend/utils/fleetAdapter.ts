@@ -1649,6 +1649,7 @@ export function clientStateToService(cs: CS, sys: Sys, cluster?: ClusterMemberHi
   }
   return {
     id: cs.id,
+    uniqueId: cs.unique_id,
     name: m.name,
     stack: sys.id,
     ownerId: sys.user_id ?? undefined,

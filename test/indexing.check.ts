@@ -6,7 +6,7 @@
 import assert from "node:assert/strict"
 import { generateKeyPairSync, createVerify } from "node:crypto"
 import {
-  accessToken, inProperty, isStuck, parseInspection, parseSitemap, publishUrl, signAssertion, urlMetadata,
+  accessToken, inProperty, isStuck, parseInspection, parseSitemap, parseSitemapIndex, publishUrl, signAssertion, urlMetadata,
 } from "../vendor/plugins/plugins/monitoring/googleIndexing"
 import { sqlClient } from "../server/fleet/db"
 import { freshSql } from "./sqlite"
@@ -70,6 +70,9 @@ assert.ok(!inProperty("https://example.com.evil.net/x", "sc-domain:example.com")
 assert.ok(!inProperty("https://other.com/", "https://example.com/"))
 const sm = parseSitemap(`<urlset><url><loc>https://a/1</loc><lastmod>2026-09-01T00:00:00Z</lastmod></url><url><loc>https://a/2?x=1&amp;y=2</loc><lastmod>2026-10-01T00:00:00Z</lastmod></url></urlset>`)
 assert.deepEqual(sm.map((e) => e.url), ["https://a/2?x=1&y=2", "https://a/1"])
+const idx = parseSitemapIndex(`<sitemapindex><sitemap><loc>https://a/post-sitemap.xml</loc><lastmod>2026-01-01T00:00:00Z</lastmod></sitemap><sitemap><loc>https://a/post-sitemap9.xml</loc><lastmod>2026-11-05T00:00:00Z</lastmod></sitemap></sitemapindex>`)
+assert.deepEqual(idx.map((e) => e.url), ["https://a/post-sitemap9.xml", "https://a/post-sitemap.xml"], "index children, newest first")
+assert.deepEqual(parseSitemapIndex("<urlset><url><loc>https://a/1</loc></url></urlset>"), [], "a urlset is not an index")
 
 // ingest
 const db = sqlClient(freshSql())
