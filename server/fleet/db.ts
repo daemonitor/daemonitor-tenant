@@ -52,7 +52,7 @@ function colSql(table: string, col: string, inSelect = false): string {
   return col
 }
 
-function encode(kind: string | undefined, v: any): any {
+export function encode(kind: string | undefined, v: any): any {
   if (v === undefined) return null
   if (v === null) return null
   if (kind === "json") return JSON.stringify(v)

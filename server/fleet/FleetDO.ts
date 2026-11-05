@@ -6,13 +6,13 @@
  * index on open alerts is still there as a backstop.
  */
 import { DurableObject } from "cloudflare:workers"
-import { migrate } from "./schema"
-import { sqlClient, type ChangeOp, type Db } from "./db"
+import { COLUMNS, migrate } from "./schema"
+import { encode, sqlClient, type ChangeOp, type Db } from "./db"
 import { ingest, type IngestRequest } from "./ingest"
 import { cloudflarePush, type CloudflarePushRequest } from "./cloudflare"
 import { claimEnrollment, claimTenant, mintEnrollment } from "./enroll"
 import type { Identity } from "./jwt"
-import { atLeast, roleOf, scopeOf, type Scope } from "./access"
+import { atLeast, ownerId, roleOf, scopeOf, type Scope } from "./access"
 import { listClientStates, listNotifications, listSystems, type NotificationQuery } from "./reads"
 import { insert, list, makeCtx, remove, update, type ListQuery } from "./data"
 import * as ops from "./ops"
@@ -313,6 +313,34 @@ export class FleetDO extends DurableObject {
   }
 
   /** The relay secret daemonitor.com handed over, and this tenant's origin to name itself with. Owner only. */
+  /**
+   * Load rows exported from the Postgres fleet (scripts/import-postgres.ts),
+   * owner only. `reset` empties the table first, so a rerun replaces rather
+   * than doubles; the owner's own membership survives it. Rows go in by raw
+   * SQL, not the builder: no change feed, no RETURNING, for 600k history rows.
+   */
+  async importRows(who: Identity, table: string, rows: Record<string, unknown>[], reset: boolean) {
+    return this.rpc("import", async () => {
+      if (!atLeast(await roleOf(this.db, who), "owner")) throw new HttpError(403, "Only the owner can import")
+      const cols = COLUMNS[table]
+      if (!cols) throw new HttpError(400, `No table ${table}`)
+      const sql = this.ctx.storage.sql
+      const owner = await ownerId(this.db)
+      let written = 0
+      this.ctx.storage.transactionSync(() => {
+        if (reset) sql.exec(table === "members" ? "delete from members where role != 'owner'" : `delete from ${table}`)
+        for (const row of rows) {
+          if (table === "members" && (row.role === "owner" || row.user_id === owner)) continue
+          const names = Object.keys(row).filter((k) => k in cols)
+          if (!names.length) continue
+          sql.exec(`insert or replace into ${table} (${names.join(", ")}) values (${names.map(() => "?").join(", ")})`, ...names.map((k) => encode(cols[k], row[k])))
+          written++
+        }
+      })
+      return { table, written }
+    })
+  }
+
   async setRelaySecret(who: Identity, secret: string, origin: string) {
     return this.rpc("relay secret", async () => {
       if (!atLeast(await roleOf(this.db, who), "owner")) throw new HttpError(403, "Only the owner can set the relay secret")
