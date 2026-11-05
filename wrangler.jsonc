@@ -3,6 +3,9 @@
   "main": "worker/index.mjs",
   "compatibility_date": "2025-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Your tenant's hostname, on a zone in this Cloudflare account. Agents report
+  // here and daemonitor.com reads from here.
+  // "routes": [{ "pattern": "monitor.example.com", "custom_domain": true }],
   "alias": { "~": "./vendor/frontend" },
   // The monthly archive streams a month of reports through gzip in one alarm.
   "limits": { "cpu_ms": 300000 },
