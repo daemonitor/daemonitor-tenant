@@ -13,6 +13,7 @@
  *   comparison orders correctly. Defaults use the same shape.
  * - uuid is text. A missing id is filled in by the query builder on insert.
  */
+import { V1 } from "./v1"
 
 const TABLES: Record<string, string> = {
   systems: `
@@ -178,14 +179,13 @@ function createTable(table: string, spec: string): string {
 /**
  * Schema versions, applied in order inside the DO's constructor. Append, never
  * edit: a tenant that already ran version N only runs what comes after it.
- *
- * Version 1 is built from TABLES above, which is fine only while no tenant is
- * deployed. Before the first real deploy, freeze version 1 as literal SQL;
- * after it, a change to TABLES must also be appended here as an ALTER.
+ * A change to TABLES needs its ALTERs appended here; test/schema.check.ts
+ * compares the result with what TABLES describes.
  */
-export const MIGRATIONS: string[][] = [
-  [...Object.entries(TABLES).map(([t, spec]) => createTable(t, spec)), ...INDEXES],
-]
+export const MIGRATIONS: string[][] = [V1]
+
+/** The schema TABLES describes, built fresh. Only for the check. */
+export const CURRENT_DDL = (): string[] => [...Object.entries(TABLES).map(([t, spec]) => createTable(t, spec)), ...INDEXES]
 
 export function migrate(sql: SqlStorage): void {
   sql.exec("create table if not exists _schema (version integer not null)")
