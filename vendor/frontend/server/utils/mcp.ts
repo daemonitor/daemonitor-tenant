@@ -22,7 +22,8 @@ const INSTRUCTIONS = `daemonitor monitors hosts, containers, websites, office ne
 Start with fleet_status: it lists every problem across the fleet with its reason.
 Levels: ok, warn, crit, standby (correctly idle, e.g. a cluster follower). A service that stopped reporting is crit with an OFFLINE status.
 Use get_system for one host's services, get_service_history for a trend, list_events for a system's past alerts, list_incidents for the operator's own write-ups.
-Where the tenant holds a Google service account: inspect_url asks Search Console whether Google indexed a page, submit_url sends an Indexing API notification, indexing_history reads what Google recorded of past submits. A 200 from submit_url does not mean Google will crawl; inspect_url later is the check.`
+Where the tenant holds a Google service account: inspect_url asks Search Console whether Google indexed a page, submit_url sends an Indexing API notification, indexing_history reads what Google recorded of past submits. A 200 from submit_url does not mean Google will crawl; inspect_url later is the check.
+Through daemonitor.com this covers every account you can open: \`account\` names the one a row came from, and \`unreachable\` lists accounts that didn't answer.`
 
 // ---- shaping ---------------------------------------------------------------
 
@@ -194,7 +195,7 @@ async function runTool(name: string, args: any, call: Call): Promise<unknown> {
         if (!one) throw new ToolError(`No system named "${args.system}". Systems: ${systems.map((s) => s.name).join(", ")}`)
         systems = [one]
       }
-      const all = systems.flatMap((sys) => (sys.services || []).map((s: any) => service(s, sys.name)))
+      const all = systems.flatMap((sys) => (sys.services || []).map((s: any) => ({ ...service(s, sys.name), ...(sys.account ? { account: sys.account } : {}) })))
       const totals: Record<string, number> = { systems: systems.length, services: all.length, ok: 0, warn: 0, crit: 0, standby: 0 }
       for (const s of all) totals[s.level as string] = (totals[s.level as string] || 0) + 1
       const order = (s: any) => -(RANK[s.level] ?? 0)
@@ -204,11 +205,13 @@ async function runTool(name: string, args: any, call: Call): Promise<unknown> {
         systems: systems.map((sys) => ({
           id: sys.id,
           name: sys.name,
+          account: sys.account,
           level: worst((sys.services || []).map((s: any) => s.level)),
           services: (sys.services || []).length,
           lastSeen: sys.last_seen,
         })),
         problems: all.filter((s) => s.level === "warn" || s.level === "crit").sort((a, b) => order(a) - order(b)),
+        ...(fleet.unreachable?.length ? { unreachable: fleet.unreachable } : {}),
         ...(args.include_ok ? { healthy: all.filter((s) => s.level === "ok" || s.level === "standby") } : {}),
       }
     }
@@ -291,6 +294,7 @@ async function runTool(name: string, args: any, call: Call): Promise<unknown> {
         const members = (g.members || []).map((id: string) => byId.get(id)).filter(Boolean).map((s: any) => scopeToDomain(s, g.cf_zone))
         return {
           name: g.name,
+          account: g.account,
           kind: g.kind || undefined,
           level: members.length ? worst(members.map((m: any) => m.level)) : undefined,
           members: members.map((m: any) => ({ name: m.name, system: m.systemName, kind: m.kindLabel, level: m.level, status: m.statusWord })),
