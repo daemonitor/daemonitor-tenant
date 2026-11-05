@@ -1075,6 +1075,36 @@ function mapByType(cs: CS): Mapped {
       }
     }
 
+    case 'workspace': {
+      // Google Workspace pooled storage, from a usage report a day or more old.
+      if (d.error) return { ...base, name: d.name || 'Workspace storage', kindLabel: 'Google Workspace', badge: 'storage', metrics: [metric('ERROR', String(d.error), 'crit')] }
+      const pct = d.usedPct == null ? null : Number(d.usedPct)
+      const lvl: Level = pct == null ? 'ok' : pct >= (Number(d.critPct) || 95) ? 'crit' : pct >= (Number(d.warnPct) || 85) ? 'warn' : 'ok'
+      const parts: any[] = Array.isArray(d.breakdown) ? d.breakdown : []
+      const users: any[] = Array.isArray(d.users) ? d.users : []
+      return {
+        ...base,
+        name: d.name || 'Workspace storage',
+        kindLabel: `Google Workspace${d.asOf ? ` · as of ${d.asOf}` : ''}`,
+        badge: 'storage',
+        metrics: [
+          metric('USED', fmtBytes(d.usedBytes), lvl),
+          ...(d.totalBytes ? [metric('OF', fmtBytes(d.totalBytes), 'ok')] : []),
+          ...(pct != null ? [metric('FULL', `${pct}%`, lvl)] : []),
+          ...parts.map((p) => metric(String(p.name).toUpperCase(), fmtBytes(p.bytes), 'ok')),
+        ],
+        // Each account's share of the pool, biggest first.
+        unitLabel: users.length ? 'USERS' : '',
+        units: users.map((u) => ({
+          name: String(u.email),
+          state: [['Drive', u.drive], ['Gmail', u.gmail], ['Photos', u.photos]].filter(([, b]) => Number(b) > 0).map(([n, b]) => `${n} ${fmtBytes(Number(b))}`).join(' · '),
+          value: fmtBytes(u.bytes),
+          level: 'ok' as Level,
+          kind: 'user',
+        })),
+      }
+    }
+
     case 'indexing': {
       // Google indexing of a URL list. Units are the URLs, worst first; the
       // per-URL alerts carry the detail and the GSC inspect link.
@@ -1478,6 +1508,9 @@ export function serviceLinks(cs: CS): ServiceLink[] {
     case 'indexing':
       if (d.site) admin('Search Console', `https://search.google.com/search-console?resource_id=${encodeURIComponent(d.site)}`, 'i-heroicons-magnifying-glass-20-solid')
       break
+    case 'workspace':
+      admin('Admin console storage', 'https://admin.google.com/ac/storage', 'i-heroicons-circle-stack-20-solid')
+      break
     case 'ga4':
       admin('Google Analytics', 'https://analytics.google.com/', 'i-heroicons-chart-bar-20-solid')
       break
@@ -1612,7 +1645,7 @@ export function clientStateToService(cs: CS, sys: Sys, cluster?: ClusterMemberHi
   // it the wider window so it doesn't flap to OFFLINE just before each poll.
   // adsense polls every 10 min for the same reason.
   // adsense and ga4 poll every 15 minutes: allow two polls of silence.
-  const staleAfter = cs.type === 'adsense' || cs.type === 'ga4' ? 1800
+  const staleAfter = cs.type === 'adsense' || cs.type === 'ga4' || cs.type === 'workspace' ? 1800
     : cs.type.startsWith('cloudflare') || cs.type === 'wordpress' ? 900
     // A nagios check runs on its own interval: three missed runs, never under 5 min.
     : cs.type === 'nagios' ? Math.max(300, (3 * (Number(cs.data?.intervalMs) || 60000)) / 1000)

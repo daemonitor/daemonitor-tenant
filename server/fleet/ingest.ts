@@ -690,6 +690,27 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 break;
             }
 
+            case "workspace": {
+                // Google Workspace pooled storage. Over critPct is an error,
+                // over warnPct a warning. No pooled cap reported means no verdict.
+                const pct = Number(body.usedPct)
+                const tb = (b: any) => `${(Number(b) / 1024 ** 4).toFixed(2)} TB`
+                if (body.authExpired) {
+                    systemStatus = "error"
+                    statusReason = "Workspace storage: authorization expired, mint a new refresh token"
+                } else if (body.error) {
+                    systemStatus = "error"
+                    statusReason = `Workspace storage: ${String(body.error).slice(0, 140)}`
+                } else if (body.usedPct != null && pct >= (Number(body.critPct) || 95)) {
+                    systemStatus = "error"
+                    statusReason = `Workspace storage ${pct}% full (${tb(body.usedBytes)} of ${tb(body.totalBytes)})`
+                } else if (body.usedPct != null && pct >= (Number(body.warnPct) || 85)) {
+                    systemStatus = "warning"
+                    statusReason = `Workspace storage ${pct}% full (${tb(body.usedBytes)} of ${tb(body.totalBytes)})`
+                }
+                break;
+            }
+
             case "indexing": {
                 // Google indexing of a URL list (IndexingPlugin). One warning per
                 // URL Google still hasn't indexed `staleHours` after it appeared,
