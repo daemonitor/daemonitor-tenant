@@ -127,6 +127,8 @@ export interface Service {
   cost?: CostDetail
   // Google indexing of a URL list (indexing services only).
   indexing?: IndexingDetail
+  // What a healthy unit is called in its popover headline ("19 of 21 indexed"); default "ok".
+  unitOkWord?: string
   // User has hidden this entity from the fleet views (local preference). Hidden
   // items are filtered out unless the global "show hidden" toggle is on, in
   // which case they render dimmed.

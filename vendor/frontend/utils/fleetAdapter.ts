@@ -1125,12 +1125,13 @@ function mapByType(cs: CS): Mapped {
               metric('NOT INDEXED', String(d.stuck ?? 0), urls.some(late) ? 'warn' : 'ok'),
             ],
         unitLabel: urls.length ? 'URLs' : '',
+        unitOkWord: 'indexed',
         units: urls
           .map((u) => ({
             name: String(u.url || '').replace(/^https?:\/\/[^/]+/, '') || String(u.url),
             state: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : 'not indexed',
             // Short: the board's popover has a narrow column; the page's table has the full text.
-            value: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : shortCoverage(u.coverageState),
+            value: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : `${shortCoverage(u.coverageState)} · ${ageOf(u.since)}`,
             level: lvl(u),
             kind: 'URL',
           }))
@@ -1427,6 +1428,12 @@ function mapByType(cs: CS): Mapped {
     default:
       return { ...base, name: d?.name || cs.type, kindLabel: cs.type, badge: cs.type }
   }
+}
+
+/** How long a URL has been listed: "5h", "20d". */
+function ageOf(since?: string): string {
+  const h = Math.max(0, (Date.now() - (Date.parse(since || '') || Date.now())) / 3600_000)
+  return h < 48 ? `${Math.floor(h)}h` : `${Math.floor(h / 24)}d`
 }
 
 /** Google's coverage sentence, cut down for a narrow column. */
@@ -1741,6 +1748,7 @@ export function clientStateToService(cs: CS, sys: Sys, cluster?: ClusterMemberHi
     cost: m.cost,
     ga4: m.ga4,
     indexing: m.indexing,
+    unitOkWord: m.unitOkWord,
     // An account-level summary stands for its whole stack (zones, Pages projects,
     // workers), so clicking it should open the stack — its own service page shows
     // only the account totals.
