@@ -1124,12 +1124,13 @@ function mapByType(cs: CS): Mapped {
               metric('INDEXED', String(d.indexed ?? 0), 'ok'),
               metric('NOT INDEXED', String(d.stuck ?? 0), urls.some(late) ? 'warn' : 'ok'),
             ],
-        unitLabel: urls.length ? 'URLS' : '',
+        unitLabel: urls.length ? 'URLs' : '',
         units: urls
           .map((u) => ({
             name: String(u.url || '').replace(/^https?:\/\/[^/]+/, '') || String(u.url),
             state: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : 'not indexed',
-            value: u.error ? String(u.error).slice(0, 60) : String(u.coverageState || ''),
+            // Short: the board's popover has a narrow column; the page's table has the full text.
+            value: u.error ? 'error' : u.verdict === 'PASS' ? 'indexed' : shortCoverage(u.coverageState),
             level: lvl(u),
             kind: 'URL',
           }))
@@ -1426,6 +1427,15 @@ function mapByType(cs: CS): Mapped {
     default:
       return { ...base, name: d?.name || cs.type, kindLabel: cs.type, badge: cs.type }
   }
+}
+
+/** Google's coverage sentence, cut down for a narrow column. */
+function shortCoverage(c?: string): string {
+  const s = String(c || '').toLowerCase()
+  if (s.startsWith('discovered')) return 'discovered'
+  if (s.startsWith('crawled')) return 'crawled, not indexed'
+  if (s.includes('unknown')) return 'unknown to Google'
+  return s || 'not indexed'
 }
 
 // ---- outbound deep links ------------------------------------------------
