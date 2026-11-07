@@ -10,7 +10,7 @@ import { hashKey } from "../server/fleet/keys"
 const sql = freshSql()
 const db = sqlClient(sql)
 const pushed: string[] = []
-const ctx = { push: async (_u: string, p: { title: string }) => { pushed.push(p.title) } }
+const ctx = { push: async (p: { title: string }) => { pushed.push(p.title) } }
 
 const KEY = "sk_test_ingest"
 const { data: sys } = await db.from("systems").insert({
@@ -44,13 +44,16 @@ assert.equal((await open()).length, 1, "still one alert")
 assert.equal(pushed.length, 1, "not pushed again")
 await report("docker", "docker-app", good)
 assert.equal((await open()).length, 0, "resolved on recovery")
+assert.equal(pushed.length, 2, "recovery pushed")
+assert.match(pushed[1], /^Recovered: /)
 
 // a recurrence inside the 30-minute cooldown is recorded but not pushed
 await report("docker", "docker-app", bad)
 await report("docker", "docker-app", bad)
 assert.equal((await open()).length, 1)
-assert.equal(pushed.length, 1, "cooldown holds the push")
+assert.equal(pushed.length, 2, "cooldown holds the push")
 await report("docker", "docker-app", good)
+assert.equal(pushed.length, 2, "a quiet alert's recovery is not pushed")
 
 // web findings: one alert per finding, closed when no longer reported
 await report("web", "web-shop", { name: "shop", ok: false, status: 503 })

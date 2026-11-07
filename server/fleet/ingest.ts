@@ -946,7 +946,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
             // This path returns early, so it used to page on the first bad
             // report and never resolve, leaving a device silent after one alert.
             if (combined === "online") {
-                await resolveNotifications(client, system, "device", deviceKey)
+                await resolveNotifications(ctx, client, system, "device", deviceKey)
             } else if (deviceFaultHeld(ex.statuses?.[source]?.status, systemStatus)) {
                 await notify(ctx, {
                     client,
@@ -1077,7 +1077,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
         // event reads as history and the same finding alerts again if it returns.
         // A failed indexing poll carries no URLs, which must not read as "all indexed".
         if (["web", "wordpress", "logwatch", "appactivity", "indexing"].includes(dataType) && !(dataType === "indexing" && body.error)) {
-            await resolveClearedFindings(client, system, dataType, uniqueId, findings.map((f) => f.key))
+            await resolveClearedFindings(ctx, client, system, dataType, uniqueId, findings.map((f) => f.key))
         }
         if (findings.length) {
             for (const f of findings) {
@@ -1142,7 +1142,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
             // first good one after closes it, so a good report after a good one
             // has nothing to close; it was an UPDATE on most of the fleet's
             // reports, every one of them finding nothing.
-            await resolveNotifications(client, system, dataType, uniqueId)
+            await resolveNotifications(ctx, client, system, dataType, uniqueId)
         }
 
         // Re-judge this host's clusters. Runs on every report from a member, not

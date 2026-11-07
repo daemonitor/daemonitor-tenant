@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import { gunzipSync } from "node:zlib"
 import { freshSql } from "./sqlite"
 import { sqlClient } from "../server/fleet/db"
-import { ageOut, exportMonth, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "../server/fleet/maintenance"
+import { ageOut, checkOffline, exportMonth, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "../server/fleet/maintenance"
 import { resolveArchived } from "~/utils/suspectNetworks"
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR
@@ -97,5 +97,30 @@ const before = count("created_at >= ?", iso(now - 30 * DAY))
 ageOut(sql, now)
 assert.equal(count("created_at < ?", iso(now - 30 * DAY)), 0)
 assert.equal(count("created_at >= ?", iso(now - 30 * DAY)), before)
+
+// --- offline: a host silent past 10 minutes raises one crit, pushed with its owner; a report closes it
+{
+  const sql = freshSql(), db = sqlClient(sql)
+  const pushed: any[] = []
+  const ctx = { push: async (a: any) => { pushed.push(a) } }
+  const host = async (name: string, lastSeen: number, type = "os") => {
+    const id = (await db.from("systems").insert({ user_id: "acct-1", name, slug: name, key_hash: name, last_seen: iso(lastSeen) }).select("id").single()).data.id
+    await db.from("client_states").insert({ system_id: id, unique_id: type, type, data: {}, updated_at: iso(lastSeen) })
+    return id
+  }
+  const quiet = await host("quiet", now - 20 * MIN)
+  await host("fine", now - MIN)
+  await host("long-gone", now - 3 * DAY)
+  await host("poller", now - 20 * MIN, "adsense")
+  assert.deepEqual(await checkOffline(db, ctx, sql, now), { raised: 1, resolved: 0 })
+  assert.equal(pushed[0].title, "quiet: OFFLINE")
+  assert.equal(pushed[0].level, "error")
+  assert.deepEqual(pushed[0].recipients, [{ userId: "acct-1", rel: "own" }])
+  assert.deepEqual(await checkOffline(db, ctx, sql, now + 5 * MIN), { raised: 0, resolved: 0 }, "still open, not raised again")
+  await db.from("systems").update({ last_seen: iso(now + 6 * MIN) }).neq("name", "long-gone")
+  assert.deepEqual(await checkOffline(db, ctx, sql, now + 10 * MIN), { raised: 0, resolved: 1 })
+  assert.equal(pushed.at(-1).event, "resolved")
+  assert.equal(pushed.at(-1).tag, pushed[0].tag, "the recovery replaces the alert")
+}
 
 console.log("maintenance.check: ok")

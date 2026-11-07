@@ -259,7 +259,7 @@ async function applyVerdict(
 
     if (healthy) {
         if (wasBad) {
-            await resolveNotifications(client, anchorSystem, "cluster", sourceDetail)
+            await resolveNotifications(ctx0, client, anchorSystem, "cluster", sourceDetail)
             console.log(`clusters: ${ctx.cluster.name}/${rule.name} recovered, ${verdict.reason}`)
         }
         return
@@ -278,7 +278,7 @@ async function applyVerdict(
     // that becomes a crit would otherwise be swallowed by its own earlier alert.
     // Close that one first and let the worse one through.
     if (prevLevel && prevLevel !== verdict.level) {
-        await resolveNotifications(client, anchorSystem, "cluster", sourceDetail)
+        await resolveNotifications(ctx0, client, anchorSystem, "cluster", sourceDetail)
     }
 
     await notify(ctx0, {

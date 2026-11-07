@@ -8,10 +8,13 @@
  * - thinHistory: daily. Beyond 24h keep the 24 newest reports per service per
  *   day (what the archive keeps); within 24h keep the 2000 newest.
  * - purgeClusterHistory: daily. Verdict history older than 14 days.
+ * - checkOffline: every 5 minutes. A host whose agent went quiet raises a crit.
  * - exportMonths + ageOut: monthly. Each finished month to R2, then history
  *   older than 30 days is deleted, and only if every export succeeded.
  */
 import type { Db } from "./db"
+import type { FleetCtx } from "./ctx"
+import { notify, resolveNotifications } from "./notify"
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -254,4 +257,50 @@ export async function exportMonths(sql: SqlStorage, bucket: R2Bucket, now = Date
     }
   }
   return { ok, done }
+}
+
+/** Silence that makes a host OFFLINE: past the board's 300s for an agent, with room for one slow report. */
+export const OFFLINE_AFTER = 10 * MIN
+/**
+ * Services that are polled from somewhere else, not reported by an agent on
+ * the host. A system holding only these has no heartbeat to lose, so its
+ * silence pages nobody (the board still paints the services OFFLINE).
+ */
+const POLLED = ["adsense", "ga4", "workspace", "cost", "indexing", "wordpress", "nagios"]
+
+/**
+ * A host that stopped reporting. Raised through notify(), so it reaches Slack,
+ * webhooks and push like any alert, and closed by the first check that sees a
+ * report again (so recovery shows up within 5 minutes).
+ *
+ * Only hosts heard from in the last day: on the first run, a box switched off
+ * weeks ago must not page as if it just died.
+ */
+export async function checkOffline(db: Db, ctx: FleetCtx, sql: SqlStorage, now = Date.now()) {
+  const hosts = sql.exec<{ id: string; name: string; user_id: string; last_seen: string }>(
+    `select s.id, s.name, s.user_id, s.last_seen from systems s
+     where s.archived = 0 and s.last_seen > ?
+       and exists (select 1 from client_states cs where cs.system_id = s.id and cs.archived = 0
+                   and cs.type not like 'cloudflare%' and cs.type not in (${POLLED.map(() => "?").join(",")}))`,
+    iso(now - DAY), ...POLLED,
+  ).toArray()
+  const open = new Set(sql.exec<{ system_id: string }>(
+    `select system_id from notifications where source = 'offline' and resolved_at is null`,
+  ).toArray().map((r) => r.system_id))
+  let raised = 0, resolved = 0
+  for (const h of hosts) {
+    const silent = now - Date.parse(h.last_seen)
+    if (silent > OFFLINE_AFTER) {
+      if (open.has(h.id)) continue
+      const min = Math.round(silent / MIN)
+      if (await notify(ctx, {
+        client: db, system: h, type: "error", source: "offline", sourceDetail: h.id,
+        title: `${h.name}: OFFLINE`,
+        message: `No report from the agent for ${min} minutes`,
+      })) raised++
+    } else if (open.has(h.id)) {
+      resolved += await resolveNotifications(ctx, db, h, "offline", h.id)
+    }
+  }
+  return { raised, resolved }
 }

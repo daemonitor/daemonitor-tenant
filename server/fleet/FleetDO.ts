@@ -17,20 +17,18 @@ import { listClientStates, listNotifications, listSystems, type NotificationQuer
 import { insert, list, makeCtx, remove, update, type ListQuery } from "./data"
 import * as ops from "./ops"
 import * as external from "./external"
-import { ageOut, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "./maintenance"
+import { ageOut, checkOffline, exportMonths, purgeClusterHistory, reapStaleServices, thinHistory } from "./maintenance"
 import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
 import { HttpError, type FleetCtx } from "./ctx"
 
-const JOBS = ["reap", "thin", "clusterPurge", "archive"] as const
+const JOBS = ["offline", "reap", "thin", "clusterPurge", "archive"] as const
 type Job = (typeof JOBS)[number]
 
-/** The next :07 past the hour. */
+/** The next 5-minute mark: the offline check runs every tick, the rest when due. */
 function nextTick(now: number): number {
-  const d = new Date(now)
-  d.setUTCMinutes(7, 0, 0)
-  if (d.getTime() <= now) d.setUTCHours(d.getUTCHours() + 1)
-  return d.getTime()
+  const FIVE = 5 * 60_000
+  return (Math.floor(now / FIVE) + 1) * FIVE
 }
 
 export type OpAuth =
@@ -87,20 +85,20 @@ export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: num
 export class FleetDO extends DurableObject {
   private db: Db
   /**
-   * Phone push goes through daemonitor.com, which holds the push credentials
-   * and the devices. Sent in the background: a push must never hold up the
-   * report that raised the alert.
+   * Web Push goes through daemonitor.com, which holds the VAPID key and the
+   * subscriptions. Sent in the background: a push must never hold up the
+   * report that raised the alert. Nobody listed gets nothing, so skip the call.
    */
   private fleetCtx: FleetCtx = {
-    push: async (userId, payload) => {
+    push: async (alert) => {
       const relay = (await this.ctx.storage.get("relay")) as { secret: string; origin: string } | undefined
       const issuer = String((this.env as any).DAEMONITOR_ISSUER || "https://daemonitor.com").replace(/\/$/, "")
-      if (!relay) return
+      if (!relay || !alert.recipients.length) return
       this.ctx.waitUntil(
         fetch(`${issuer}/api/push/relay`, {
           method: "POST",
           headers: { authorization: `Bearer ${relay.secret}`, "x-daemonitor-tenant": relay.origin, "content-type": "application/json" },
-          body: JSON.stringify({ userId, ...payload }),
+          body: JSON.stringify(alert),
         }).then((r) => { if (!r.ok) console.warn(`push relay: HTTP ${r.status}`) }, (e) => console.warn("push relay:", e?.message || e)),
       )
     },
@@ -167,7 +165,8 @@ export class FleetDO extends DurableObject {
   }
 
   /**
-   * Housekeeping, once an hour at :07. Each job records when it last ran, so a
+   * Housekeeping, every 5 minutes: the offline check each time, the reap once
+   * an hour, the rest daily or monthly. Each job records when it last ran, so a
    * missed hour (a deploy, an outage) is caught up on the next one rather than
    * skipped until tomorrow. One failing job doesn't stop the others, and the
    * next alarm is always set.
@@ -197,7 +196,9 @@ export class FleetDO extends DurableObject {
         console.error(`maintenance: ${job} failed:`, e)
       }
     }
-    await run("reap", true, () => reapStaleServices(this.db, sql, now), d.toISOString())
+    await run("offline", true, () => checkOffline(this.db, this.fleetCtx, sql, now), d.toISOString())
+    const hour = d.toISOString().slice(0, 13)
+    await run("reap", state.reap?.slice(0, 13) !== hour, () => reapStaleServices(this.db, sql, now), d.toISOString())
     await run("thin", d.getUTCHours() >= 4 && state.thin !== today, () => thinHistory(sql, now), today)
     await run("clusterPurge", d.getUTCHours() >= 4 && state.clusterPurge !== today, () => purgeClusterHistory(sql, now), today)
     // A failed export leaves the month unstamped, so it's retried next hour, and
@@ -210,6 +211,9 @@ export class FleetDO extends DurableObject {
       return { ...r, agedOut: ageOut(sql, now) }
     }, month)
     await this.ctx.storage.put("jobs", state)
+    // The offline check runs every 5 minutes; log it only when it did something.
+    const quiet = (out.offline as any)?.raised === 0 && (out.offline as any)?.resolved === 0
+    if (quiet) delete out.offline
     if (Object.keys(out).length) console.log("maintenance:", JSON.stringify(out))
     return out
   }

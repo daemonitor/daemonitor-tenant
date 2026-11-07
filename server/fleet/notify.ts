@@ -13,7 +13,7 @@
  */
 import { postSlackMessage, resolveSlackMessage } from "~/server/utils/slack"
 import { deliverWebhook } from "~/server/utils/webhook"
-import type { FleetCtx } from "./ctx"
+import type { FleetCtx, PushAlert, PushRel } from "./ctx"
 
 export type NotifyType = "error" | "warning" | "info" | "success"
 
@@ -134,8 +134,9 @@ export async function notify(ctx: FleetCtx, input: NotifyInput): Promise<boolean
         type: input.type,
         source: input.source,
         source_detail: input.sourceDetail,
-        ...(input.service || input.detail
-            ? { metadata: { ...(input.service ? { service: input.service } : {}), ...(input.detail ? { detail: input.detail } : {}) } }
+        // quiet: recorded inside the cooldown and never pushed, so its recovery isn't pushed either.
+        ...(input.service || input.detail || quiet
+            ? { metadata: { ...(input.service ? { service: input.service } : {}), ...(input.detail ? { detail: input.detail } : {}), ...(quiet ? { quiet: true } : {}) } }
             : {}),
         read: false,
         created_at: new Date().toISOString(),
@@ -155,16 +156,14 @@ export async function notify(ctx: FleetCtx, input: NotifyInput): Promise<boolean
         return true
     }
 
-    // Mirror to registered push devices (no-op if push is unconfigured).
-    try {
-        await ctx.push(system.user_id, {
-            title,
-            body: message,
-            data: { system_id: system.id, type: input.type, source: input.source },
-        })
-    } catch (e: any) {
-        console.error("notify: push delivery failed:", e?.message || e)
-    }
+    await pushAlert(ctx, client, system, {
+        event: "raised",
+        level: input.type,
+        title,
+        body: message,
+        path: `/app/systems/${input.serviceId || system.id}`,
+        tag: `${system.id}:${input.source}:${input.sourceDetail}`,
+    })
 
     await fanOutToChannels(input, title, message, row?.id)
     return true
@@ -191,6 +190,7 @@ export async function notify(ctx: FleetCtx, input: NotifyInput): Promise<boolean
  * @returns how many were closed.
  */
 export async function resolveNotifications(
+    ctx: FleetCtx,
     client: any,
     system: NotifySystem,
     source: string,
@@ -219,7 +219,7 @@ export async function resolveNotifications(
         if (error) throw new Error(error.message)
         const n = data?.length || 0
         if (n) console.log(`notify: resolved ${n} open ${source} alert(s) for ${system.name}`)
-        if (n) await fanOutResolved(client, system, data)
+        if (n) await fanOutResolved(ctx, client, system, data)
         return n
     } catch (e: any) {
         console.error("notify: could not resolve alerts:", e?.message || e)
@@ -240,6 +240,7 @@ export async function resolveNotifications(
  * quiet report cannot close another's findings.
  */
 export async function resolveClearedFindings(
+    ctx: FleetCtx,
     client: any,
     system: NotifySystem,
     source: string,
@@ -264,7 +265,7 @@ export async function resolveClearedFindings(
             .in("id", ids)
             .select(RESOLVED_FIELDS)
         if (updateError) throw new Error(updateError.message)
-        if (closed?.length) await fanOutResolved(client, system, closed)
+        if (closed?.length) await fanOutResolved(ctx, client, system, closed)
         return ids.length
     } catch (e: any) {
         console.error("notify: could not resolve cleared findings:", e?.message || e)
@@ -303,6 +304,39 @@ export async function resolveBySourceDetail(
     } catch (e: any) {
         console.error("notify: could not resolve alerts by detail:", e?.message || e)
         return 0
+    }
+}
+
+/**
+ * Push one alert to everyone who might want it: the owner, members of the
+ * tenant and system grantees, each tagged with how they relate to the system.
+ * daemonitor.com drops whoever's settings say no (level, recoveries, which
+ * systems). Group grants are left out, for the reason recipientsFor() gives.
+ * Best-effort: a push failure never fails the report.
+ */
+async function pushAlert(ctx: FleetCtx, client: any, system: NotifySystem, alert: Omit<PushAlert, "recipients">): Promise<void> {
+    try {
+        const RANK_REL: Record<PushRel, number> = { view: 1, manage: 2, own: 3 }
+        const rel = new Map<string, PushRel>([[system.user_id, "own"]])
+        const add = (id: string | null | undefined, r: PushRel) => {
+            if (id && RANK_REL[r] > (RANK_REL[rel.get(id)!] ?? 0)) rel.set(id, r)
+        }
+        const asRel = (role: string): PushRel => (role === "owner" ? "own" : role === "manager" ? "manage" : "view")
+        const [members, grants] = await Promise.all([
+            client.from("members").select("user_id, role").not("user_id", "is", null),
+            client.from("grants").select("grantee_id, role")
+                .eq("resource_type", "system").eq("resource_id", system.id).not("grantee_id", "is", null),
+        ])
+        for (const m of members.data || []) add(m.user_id, asRel(m.role))
+        for (const g of grants.data || []) add(g.grantee_id, g.role === "manager" ? "manage" : "view")
+        await ctx.push({
+            ...alert,
+            title: alert.title.slice(0, 200),
+            body: alert.body.slice(0, 300),
+            recipients: [...rel].map(([userId, r]) => ({ userId, rel: r })),
+        })
+    } catch (e: any) {
+        console.error("notify: push failed:", e?.message || e)
     }
 }
 
@@ -380,7 +414,18 @@ const RESOLVED_FIELDS = "id, title, message, type, source, source_detail, metada
  * the alert's own message is edited instead, to say it resolved, when it
  * started and how long it lasted.
  */
-async function fanOutResolved(client: any, system: NotifySystem, rows: any[]): Promise<void> {
+async function fanOutResolved(ctx: FleetCtx, client: any, system: NotifySystem, rows: any[]): Promise<void> {
+    for (const row of rows) {
+        if (row.metadata?.quiet) continue
+        await pushAlert(ctx, client, system, {
+            event: "resolved",
+            level: row.type,
+            title: `Recovered: ${row.title}`,
+            body: `Back to OK. Was: ${row.message}`,
+            path: `/app/systems/${system.id}`,
+            tag: `${system.id}:${row.source}:${row.source_detail}`,
+        })
+    }
     const all = await channelsFor(client, system)
     await editSlackResolved(system, rows, all.filter((c) => c.kind === "slack"))
     const hooks = all.filter((c) => c.kind === "webhook")

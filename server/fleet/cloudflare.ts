@@ -672,7 +672,7 @@ export async function cloudflarePush(client: Db, ctx: FleetCtx, req: CloudflareP
         // Alerts once the rows they describe are in; a new one is rare, so in
         // turn. Then everything that's clear closed, one query per kind.
         for (const a of alerts) await notify(ctx, a)
-        await Promise.all(Object.entries(toResolve).map(([source, details]) => resolveNotifications(client, system, source, details)))
+        await Promise.all(Object.entries(toResolve).map(([source, details]) => resolveNotifications(ctx, client, system, source, details)))
 
         return {
             success: true,
