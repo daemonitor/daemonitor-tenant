@@ -146,14 +146,14 @@ function fmtUptime(secs: number): string {
 }
 
 export const COST_PROVIDER_LABEL: Record<string, string> = {
-  openai: 'OpenAI', anthropic: 'Anthropic', aws: 'AWS', vercel: 'Vercel', fastly: 'Fastly',
+  openai: 'OpenAI', anthropic: 'Anthropic', aws: 'AWS', vercel: 'Vercel', fastly: 'Fastly', vultr: 'Vultr',
   cloudflare: 'Cloudflare', posthog: 'PostHog', gcp: 'Google Cloud', workspace: 'Google Workspace', 'google-ads': 'Google Ads', 'meta-ads': 'Meta Ads',
 }
 
 const COST_BILLING_URL: Record<string, string> = {
   openai: 'https://platform.openai.com/usage', anthropic: 'https://console.anthropic.com/usage',
   aws: 'https://console.aws.amazon.com/cost-management/home', vercel: 'https://vercel.com/dashboard/usage',
-  fastly: 'https://manage.fastly.com/account/billing', cloudflare: 'https://dash.cloudflare.com/?to=/:account/billing',
+  fastly: 'https://manage.fastly.com/account/billing', vultr: 'https://my.vultr.com/billing/', cloudflare: 'https://dash.cloudflare.com/?to=/:account/billing',
   posthog: 'https://us.posthog.com/organization/billing', gcp: 'https://console.cloud.google.com/billing/reports',
   workspace: 'https://admin.google.com/ac/billing/subscriptions', 'google-ads': 'https://ads.google.com/aw/billing',
   'meta-ads': 'https://business.facebook.com/billing_hub',
