@@ -219,8 +219,10 @@ export async function cloudflarePush(client: Db, ctx: FleetCtx, req: CloudflareP
         // didn't: one pending zone raised and resolved this alert 239 times a
         // day. Zones and projects are judged on their own rows below, only when
         // they are in the push. Workers come from byScript, which is complete.
-        // Check Workers status if available
-        const workersReason = workersIssue(body.workers)
+        // A worker's own errors are raised on that worker's service below, so
+        // one noisy worker no longer holds the whole account open. What stays
+        // here is the reporter failing to read Workers at all, which names none.
+        const workersReason = body.workers?.error ? `Workers error: ${body.workers.error}` : null
         if (workersReason && systemStatus !== "error") {
             systemStatus = "warning";
             statusReason = statusReason || workersReason;
@@ -362,10 +364,12 @@ export async function cloudflarePush(client: Db, ctx: FleetCtx, req: CloudflareP
             let workersStatus = 'online';
             let workersStatusReason = null;
             
-            // Check for errors — same rule as the account status above.
-            if (workersReason) {
+            // The card still says which workers are erroring; the alerts for
+            // them are each worker's own.
+            const workersCardReason = workersIssue(body.workers)
+            if (workersCardReason) {
                 workersStatus = 'warning';
-                workersStatusReason = workersReason;
+                workersStatusReason = workersCardReason;
             }
             
             // Create Workers data structure
@@ -386,6 +390,7 @@ export async function cloudflarePush(client: Db, ctx: FleetCtx, req: CloudflareP
             // rotate in and out and flap OFFLINE on the staleness rule. byScript
             // covers every script on every push. `scripts` still supplies
             // metadata when that worker happens to be in this run's shard.
+            const erroring = new Set<string>()
             const byScript: any[] = Array.isArray(body.workers.byScript) ? body.workers.byScript : []
             const scriptMeta = new Map<string, any>(
                 (Array.isArray(body.workers.scripts) ? body.workers.scripts : [])
@@ -487,7 +492,35 @@ export async function cloudflarePush(client: Db, ctx: FleetCtx, req: CloudflareP
                     },
                 }
 
-                put(`cf-worker-script-${name}`, "cloudflare-worker-script", scriptData, scriptStatus, scriptStatusReason)
+                const scriptId = `cf-worker-script-${name}`
+                put(scriptId, "cloudflare-worker-script", scriptData, scriptStatus, scriptStatusReason)
+                // Keyed on the worker, so dedupe and the re-alert cooldown are
+                // per worker. It closes once the recent window is clean (below).
+                if (scriptStatusReason) {
+                    erroring.add(scriptId)
+                    alerts.push({
+                        client, system,
+                        title: `${system.name}: ${name} ${scriptStatusReason.charAt(0).toLowerCase()}${scriptStatusReason.slice(1)}`,
+                        message: `${name}: ${scriptStatusReason}`,
+                        type: 'warning',
+                        source: 'cloudflare-worker-script',
+                        sourceDetail: scriptId,
+                        service: scriptId,
+                    })
+                }
+            }
+
+            // Close every open worker alert whose worker isn't erroring now, by
+            // what's open rather than what's in this push, so a worker that was
+            // deleted or went quiet doesn't hold its alert forever. An empty
+            // byScript is a failed per-script query (it returns [] silently),
+            // not "all clear", so it closes nothing.
+            if (byScript.length && !body.workers.error) {
+                const { data: open } = await client.from('notifications').select('source_detail')
+                    .eq('system_id', system.id).eq('source', 'cloudflare-worker-script').is('resolved_at', null)
+                for (const r of (open || []) as any[]) {
+                    if (!erroring.has(r.source_detail)) resolve('cloudflare-worker-script', r.source_detail)
+                }
             }
         }
         

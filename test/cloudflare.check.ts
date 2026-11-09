@@ -52,11 +52,16 @@ await push({
 assert.deepEqual((await open()).map((r: any) => `${r.source}|${r.source_detail}|${r.type}`), [
   "cloudflare-project|cf-pages:p1|warning",
   "cloudflare-domain|cf-zone:z1|warning",
-  "cloudflare|cf-acct1-cloudflare|warning",
+  "cloudflare-worker-script|cf-worker-script-api|warning",
 ].sort((a, b) => a.split("|")[1].localeCompare(b.split("|")[1])))
 assert.equal((await state("cf-worker-script-api")).status, "warning")
 assert.equal((await state("cf-worker-script-idle")).data.script.requests, 0, "idle worker seeded from inventory")
 assert.equal((await state("cf-domain-z1")).status, "warning")
+
+// worker alerts are the worker's own: titled by it, stamped with its service
+const { data: apiAlert } = await db.from("notifications").select("title, metadata").eq("source_detail", "cf-worker-script-api").single()
+assert.equal(apiAlert.title, "HERETIC: api worker errors: 2 of 5 requests in the last 60m")
+assert.equal(apiAlert.metadata.service, "cf-worker-script-api")
 
 // the daily row keeps traffic and probes side by side
 const { data: day } = await db.from("cf_zone_daily").select("requests, probes, probe_paths").eq("unique_id", "cf-domain-z1").single()
@@ -92,5 +97,21 @@ assert.equal(day2.probes, 7)
 const { data: s } = await db.from("systems").select("last_seen, os").eq("id", sys.id).single()
 assert.ok(s.last_seen)
 assert.equal(s.os.name, "Cloudflare")
+
+// A rollup left open from before per-worker alerts closes on the next push.
+await db.from("notifications").insert({ user_id: "owner", system_id: sys.id, title: "t", message: "m", type: "warning", source: "cloudflare", source_detail: "cf-acct1-cloudflare" })
+// Two workers erroring: one alert each. One clearing doesn't touch the other,
+// and a worker that drops out of the push (deleted, quiet) is closed too.
+await push({ workers: workers([{ script: "api", requests: 5, errors: 1, recentRequests: 5, recentErrors: 1 }, { script: "cron", requests: 5, errors: 1, recentRequests: 5, recentErrors: 1 }]) })
+assert.deepEqual((await open()).map((r: any) => r.source_detail), ["cf-worker-script-api", "cf-worker-script-cron"])
+await push({ workers: workers([{ script: "api", requests: 5, errors: 2, recentRequests: 5, recentErrors: 2 }, { script: "cron", requests: 5, errors: 0, recentRequests: 5, recentErrors: 0 }]) })
+assert.deepEqual((await open()).map((r: any) => r.source_detail), ["cf-worker-script-api"], "deduped on api, cron closed")
+assert.equal((await db.from("notifications").select("id", { count: "exact" }).eq("source_detail", "cf-worker-script-api").is("resolved_at", null)).count, 1)
+await push({ workers: workers([{ script: "cron", requests: 5, errors: 0, recentRequests: 5, recentErrors: 0 }]) })
+assert.deepEqual(await open(), [], "api left the push and its alert closed")
+// An empty byScript is a failed query, not all clear.
+await push({ workers: workers([{ script: "api", requests: 5, errors: 1, recentRequests: 5, recentErrors: 1 }]) })
+await push({ workers: workers([]) })
+assert.deepEqual((await open()).map((r: any) => r.source_detail), ["cf-worker-script-api"])
 
 console.log("cloudflare.check: ok")
