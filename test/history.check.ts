@@ -73,6 +73,17 @@ assert.deepEqual((await probes(db, grp)).rows, [], "the zone isn't in the grante
 
 // a system's event log: members yes, group grantees no
 assert.equal((await systemEvents(db, owner, { systemId: B })).total, 1)
+// Narrowed to one service: its findings, its status alerts, and cluster rows.
+await db.from("notifications").insert([
+  { user_id: "owner", system_id: B, title: "t", message: "m", type: "error", source: "web", source_detail: "web:fail:y", metadata: { service: "other" } },
+  { user_id: "owner", system_id: B, title: "t", message: "m", type: "error", source: "status", source_detail: "web-x" },
+  { user_id: "owner", system_id: B, title: "t", message: "m", type: "error", source: "cluster", source_detail: "c1" },
+  { user_id: "owner", system_id: B, title: "t", message: "m", type: "error", source: "web", source_detail: "web:fail:z", metadata: { service: "web-x" } },
+])
+const narrowed = await systemEvents(db, owner, { systemId: B, service: "web-x", limit: 2 })
+assert.equal(narrowed.total, 3)
+assert.equal(narrowed.events.length, 2)
+assert.equal((await systemEvents(db, owner, { systemId: B })).total, 5)
 await assert.rejects(systemEvents(db, grp, { systemId: B }), /System not found/)
 
 // An lxc container's net comes from data.container.network; a sample without it stays null.

@@ -438,7 +438,7 @@ export async function probes(db: Db, scope: Scope) {
   return { rows }
 }
 
-export interface EventsQuery { id?: string; systemId?: string; limit?: number; offset?: number; source?: string; detail?: string }
+export interface EventsQuery { id?: string; systemId?: string; limit?: number; offset?: number; source?: string; detail?: string; service?: string }
 
 /**
  * system/events: every alert a system raised, open or resolved. Events belong
@@ -466,6 +466,15 @@ export async function systemEvents(db: Db, scope: Scope, q: EventsQuery) {
   if (uuid.test(eventId)) rows = rows.eq("id", eventId)
   if (q.source) rows = rows.eq("source", String(q.source))
   if (q.detail) rows = rows.eq("source_detail", String(q.detail))
+  // One service's events, by the system page's rule: a finding names its
+  // service in metadata.service, a status alert carries it as source_detail,
+  // and cluster alerts (filed on a member host) stay.
+  if (q.service) {
+    const uid = String(q.service)
+    // or() splits on commas and parens; a unique id holding one can't be expressed.
+    if (/[,()]/.test(uid)) throw new HttpError(400, "Unsupported service id")
+    rows = rows.or(`metadata->>service.eq.${uid},source_detail.eq.${uid},source.eq.cluster`)
+  }
   const { data, count } = await rows
   return { success: true, events: data || [], total: count ?? 0 }
 }
