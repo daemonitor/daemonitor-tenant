@@ -6,6 +6,7 @@ import { sqlClient } from "../server/fleet/db"
 import { freshSql } from "./sqlite"
 import { ingest } from "../server/fleet/ingest"
 import { hashKey } from "../server/fleet/keys"
+import { clientStateToService, scopeToDomain } from "~/utils/fleetAdapter"
 
 const sql = freshSql()
 const db = sqlClient(sql)
@@ -73,5 +74,44 @@ await report("snmp", "snmp-1", { name: "QNAP", ip: "10.0.0.5", reachable: true, 
 const { data: dev } = await db.from("client_states").select("type, data").eq("unique_id", "dev-10-0-0-5").single()
 assert.equal(dev.type, "device")
 assert.deepEqual(Object.keys(dev.data.sources).sort(), ["netscan", "snmp"])
+
+// Google: a transient API failure keeps the last good reading and warns; an
+// auth failure is still an error and replaces it.
+const ga = { name: "Google Analytics", properties: 1, accounts: [{ id: "1", name: "A", properties: [{ id: "9", name: "Site", domains: ["site.example"], today: { users: 5 }, last7: { users: 40 } }] }] }
+const gaRow = async () => (await db.from("client_states").select("id, type, status, status_reason, data, updated_at").eq("unique_id", "ga4-0").single()).data
+// What a website group holding the account shows: the stored row through the adapter, scoped to the group's domain.
+const siteLevel = async () => scopeToDomain(clientStateToService(await gaRow(), { id: sys.id, name: "pi5a" }), "site.example").level
+await report("ga4", "ga4-0", ga)
+assert.equal((await gaRow()).status, "online")
+const outage = { error: "The service is currently unavailable.", transient: true }
+await report("ga4", "ga4-0", outage)
+let row = await gaRow()
+assert.equal(row.status, "warning")
+assert.match(row.status_reason, /showing the last reading/)
+assert.deepEqual(row.data.accounts, ga.accounts, "figures kept")
+assert.equal(await siteLevel(), "ok", "a GA 503 leaves the site's group green")
+assert.equal(row.data.error, undefined)
+const since = row.data.stale.since
+await report("ga4", "ga4-0", outage)
+row = await gaRow()
+assert.equal(row.data.stale.since, since, "stale since the first failure")
+assert.equal((await open()).filter((r: any) => r.source === "ga4").every((r: any) => r.type === "warning"), true, "a held outage pages a warning at most")
+await report("ga4", "ga4-0", ga)
+row = await gaRow()
+assert.equal(row.status, "online")
+assert.equal(row.data.stale, undefined)
+assert.equal((await open()).filter((r: any) => r.source === "ga4").length, 0)
+await report("ga4", "ga4-0", { error: "Token has been expired or revoked.", authExpired: true })
+row = await gaRow()
+assert.equal(row.status, "error")
+assert.equal(row.data.authExpired, true)
+assert.equal(await siteLevel(), "crit", "an auth failure still reaches the site")
+await report("ga4", "ga4-0", { error: "User does not have sufficient permissions" })
+assert.equal((await gaRow()).status, "error", "a non-transient API error is still an error")
+// a transient failure with no good reading before it warns, without figures
+await report("adsense", "adsense-0", { error: "Backend Error", transient: true })
+const ad = (await db.from("client_states").select("status, status_reason").eq("unique_id", "adsense-0").single()).data
+assert.equal(ad.status, "warning")
+assert.match(ad.status_reason, /no reading yet/)
 
 console.log("ingest.check: ok")

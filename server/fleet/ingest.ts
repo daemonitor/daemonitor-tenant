@@ -23,6 +23,9 @@ export interface IngestRequest {
 /** Types that are not written to client_state_history (see the insert below). */
 const SELF_HISTORIED = new Set(["adsense", "ga4", "cost"])
 
+/** Google API plugins that flag a failed poll `transient` (an outage, 429 or timeout on Google's side). */
+const GOOGLE_POLLED = new Set(["adsense", "ga4", "workspace", "indexing"])
+
 export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
         const body = req.body
         // Stored as jsonb on every push, in the state row and in history.
@@ -97,6 +100,27 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
         const findings: Finding[] = []
         const addFinding = (f: Finding) => {
             if (findings.length < 50 && !findings.some((x) => x.key === f.key)) findings.push(f)
+        }
+
+        // What the row stores. A Google API outage or rate limit (the plugin
+        // flags it `transient`) is Google's problem and the next poll can fix
+        // it, so the row keeps the last good reading, marked `stale`, and the
+        // cases below warn instead of failing. Without this one 503 from the
+        // Analytics API turned every website group that holds the account red.
+        let stored = body
+        const transient = !!(body?.error && body.transient && GOOGLE_POLLED.has(dataType))
+        if (transient) {
+            const { data: last } = await client.from("client_states").select("data")
+                .eq("unique_id", uniqueId).eq("system_id", system.id).limit(1)
+            const prev = last?.[0]?.data
+            // ponytail: stays a warning however long Google is down; escalate on stale.since if that matters.
+            if (prev && !prev.error) stored = { ...prev, stale: { error: String(body.error).slice(0, 160), since: prev.stale?.since ?? new Date().toISOString() } }
+        }
+        const pollFailed = (label: string) => {
+            systemStatus = transient ? "warning" : "error"
+            statusReason = transient
+                ? `${label}: Google API failed, ${stored === body ? "no reading yet" : "showing the last reading"} (${String(body.error).slice(0, 120)})`
+                : `${label}: ${String(body.error).slice(0, 140)}`
         }
 
         // Process different monitoring data types
@@ -626,8 +650,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                     systemStatus = "error"
                     statusReason = `${label}: authorization expired, mint a new refresh token`
                 } else if (body.error) {
-                    systemStatus = "error"
-                    statusReason = `${label}: ${String(body.error).slice(0, 140)}`
+                    pollFailed(label)
                 } else if (Number(body.yesterday) === 0 && earlier > 0) {
                     // ponytail: zero-day check only. A partial drop (say 80% down)
                     // passes. Compare against a trailing average if that matters.
@@ -676,16 +699,15 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 // like adsense. Some properties failing while others report is a
                 // warning naming how many, since the rest of the view is still good.
                 const accounts: any[] = Array.isArray(body.accounts) ? body.accounts : []
-                const failed = accounts.flatMap((a) => (a.properties || []).filter((p: any) => p.error))
+                const failedProps = accounts.flatMap((a) => (a.properties || []).filter((p: any) => p.error))
                 if (body.authExpired) {
                     systemStatus = "error"
                     statusReason = "Google Analytics: authorization expired, mint a new refresh token"
                 } else if (body.error) {
-                    systemStatus = "error"
-                    statusReason = `Google Analytics: ${String(body.error).slice(0, 140)}`
-                } else if (failed.length) {
+                    pollFailed("Google Analytics")
+                } else if (failedProps.length) {
                     systemStatus = "warning"
-                    statusReason = `Google Analytics: ${failed.length} propert${failed.length === 1 ? "y" : "ies"} failed to report (${failed[0].name}: ${String(failed[0].error).slice(0, 80)})`
+                    statusReason = `Google Analytics: ${failedProps.length} propert${failedProps.length === 1 ? "y" : "ies"} failed to report (${failedProps[0].name}: ${String(failedProps[0].error).slice(0, 80)})`
                 }
                 break;
             }
@@ -699,8 +721,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                     systemStatus = "error"
                     statusReason = "Workspace storage: authorization expired, mint a new refresh token"
                 } else if (body.error) {
-                    systemStatus = "error"
-                    statusReason = `Workspace storage: ${String(body.error).slice(0, 140)}`
+                    pollFailed("Workspace storage")
                 } else if (body.usedPct != null && pct >= (Number(body.critPct) || 95)) {
                     systemStatus = "error"
                     statusReason = `Workspace storage ${pct}% full (${tb(body.usedBytes)} of ${tb(body.totalBytes)})`
@@ -720,7 +741,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 const staleMs = (Number(body.staleHours) || 72) * 3600_000
                 const list: any[] = Array.isArray(body.urls) ? body.urls : []
                 const late = list.filter((u) => u?.stuck && Date.now() - (Date.parse(u.since) || Date.now()) > staleMs)
-                const failed = list.filter((u) => u?.error)
+                const failedUrls = list.filter((u) => u?.error)
                 for (const u of late) {
                     const days = Math.floor((Date.now() - Date.parse(u.since)) / 86400_000)
                     const sent = u.notify?.updated ? `last submitted ${u.notify.updated}` : u.notify === null ? "Indexing API has no submit on record" : ""
@@ -766,14 +787,13 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                     systemStatus = "error"
                     statusReason = `Indexing ${site}: Google rejected the service account (${String(body.error || "").slice(0, 100)})`
                 } else if (body.error) {
-                    systemStatus = "error"
-                    statusReason = `Indexing ${site}: ${String(body.error).slice(0, 140)}`
+                    pollFailed(`Indexing ${site}`)
                 } else if (late.length) {
                     systemStatus = "warning"
                     statusReason = `${late.length} of ${list.length} URL${list.length === 1 ? "" : "s"} not indexed after ${Math.round(staleMs / 3600_000)}h`
-                } else if (failed.length) {
+                } else if (failedUrls.length) {
                     systemStatus = "warning"
-                    statusReason = `${failed.length} URL${failed.length === 1 ? "" : "s"} failed inspection (${String(failed[0].error).slice(0, 80)})`
+                    statusReason = `${failedUrls.length} URL${failedUrls.length === 1 ? "" : "s"} failed inspection (${String(failedUrls[0].error).slice(0, 80)})`
                 }
                 break
             }
@@ -1042,7 +1062,7 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                     unique_id: uniqueId,
                     system_id: system.id,
                     type: dataType,
-                    data: body,
+                    data: stored,
                     status: systemStatus,
                     status_reason: statusReason,
                     client_ip: clientIp,

@@ -248,8 +248,11 @@ export function scopeToDomain(s: Service, domain?: string | null): Service {
   const a = s.adsense
   if (!a) return s
   const site = a.sites?.find((x) => host(x.domain) === host(domain))
+  // A kept reading through a Google API failure warns on the account's row, not every site's.
+  const stale = (a as any).stale && s.level === 'warn' ? { level: 'ok' as Level, statusWord: WORD.ok, statusReason: undefined } : {}
   return {
     ...s,
+    ...stale,
     // The account's name ("The Architect's Newspaper") isn't this site's.
     name: 'AdSense',
     kindLabel: `${s.kindLabel} · ${host(domain)}`,
@@ -1161,7 +1164,9 @@ function mapByType(cs: CS): Mapped {
               rpm: Number(d.rpm) || 0, daily,
               accountId: d.accountId,
               sites: Array.isArray(d.sites) ? d.sites : undefined,
-            }
+              // The tenant kept the last reading through a Google API failure.
+              ...(d.stale ? { stale: true } : {}),
+            } as AdsenseDetail
           : undefined,
       }
     }
