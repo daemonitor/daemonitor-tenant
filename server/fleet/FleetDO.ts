@@ -21,6 +21,7 @@ import { ageOut, checkOffline, exportMonths, purgeClusterHistory, reapStaleServi
 import { cfHistory, historyBatch, overviewHistory, probes, serviceHistory, suspects, systemEvents, type EventsQuery, type HistoryQuery } from "./history"
 import { fromAttachment, liveMessage, LIVE_PROTOCOL, toAttachment, type LiveAttachment } from "./live"
 import { HttpError, type FleetCtx } from "./ctx"
+import { getFrame, putFrame, type FrameUpload } from "./frames"
 
 const JOBS = ["offline", "reap", "thin", "clusterPurge", "archive"] as const
 type Job = (typeof JOBS)[number]
@@ -78,6 +79,7 @@ const OPS: Record<string, (c: ops.OpCtx, a: any) => unknown> = {
   }),
   "external.incidents": scoped((db, scope, _c, a) => external.incidents(db, scope, a)),
   "external.enroll": (c, a) => mintEnrollment(c.db, c.who!, a, String(a.origin)),
+  cameraFrame: scoped((db, scope, c, a) => getFrame(db, c.storage!, scope, String(a.id || ""))),
 }
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; statusCode: number; message: string }
@@ -252,7 +254,7 @@ export class FleetDO extends DurableObject {
       else if (auth.kind === "key") who = await ops.identifyKey(this.db, auth.key, auth.want)
       const scope = who ? await scopeOf(this.db, who) : null
       if (who && !scope) throw new HttpError(403, "You don't have access to this tenant")
-      const c: ops.OpCtx = { db: this.db, sql: this.ctx.storage.sql, env: this.env, who, scope, role: scope?.all ? scope.role : null }
+      const c: ops.OpCtx = { db: this.db, sql: this.ctx.storage.sql, storage: this.ctx.storage, env: this.env, who, scope, role: scope?.all ? scope.role : null }
       return handler(c, args)
     })
   }
@@ -309,6 +311,11 @@ export class FleetDO extends DurableObject {
    */
   async ingest(req: IngestRequest): Promise<RpcResult<unknown>> {
     return this.rpc("ingest", () => ingest(this.db, this.fleetCtx, req))
+  }
+
+  /** A camera's latest frame, from the agent that watches it. */
+  async putFrame(up: FrameUpload): Promise<RpcResult<unknown>> {
+    return this.rpc("camera frame", () => putFrame(this.db, this.ctx.storage, up))
   }
 
   /** A Cloudflare reporter's push. */
