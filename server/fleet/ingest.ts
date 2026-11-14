@@ -674,15 +674,26 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 const yesterday = Number(body.yesterday) || 0
                 const avg7 = Number(body.avg7) || 0
                 const spikeFactor = Number(body.spikeFactor) || 3
+                const reached = (Array.isArray(body.limits) ? body.limits : []).filter((l: any) => l?.status === "limit_reached")
+                const blocked = reached.find((l: any) => l.blocks)
+                const alerted = reached.find((l: any) => !l.blocks)
                 if (body.authExpired) {
                     systemStatus = "error"
                     statusReason = `${label}: billing API rejected the key`
                 } else if (body.error) {
                     systemStatus = "error"
                     statusReason = `${label}: ${String(body.error).slice(0, 140)}`
+                } else if (blocked) {
+                    // The provider is stopping the product itself (Cloudflare
+                    // spend policy with usage_block), so this is an outage.
+                    systemStatus = "error"
+                    statusReason = `${label}: ${blocked.product || blocked.name} spending limit of ${money(blocked.threshold)} reached, ${body.provider === "cloudflare" ? "Cloudflare" : "the provider"} is blocking it`
                 } else if (budget && mtd > budget) {
                     systemStatus = "error"
                     statusReason = `${label}: ${money(mtd)} spent, over the ${money(budget)} budget`
+                } else if (alerted) {
+                    systemStatus = "warning"
+                    statusReason = `${label}: ${alerted.product || alerted.name} past its ${money(alerted.threshold)} spend alert`
                 } else if (budget && projected > budget) {
                     systemStatus = "warning"
                     statusReason = `${label}: on course for ${money(projected)}, budget ${money(budget)}`
