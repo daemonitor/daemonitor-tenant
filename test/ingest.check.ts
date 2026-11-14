@@ -114,4 +114,16 @@ const ad = (await db.from("client_states").select("status, status_reason").eq("u
 assert.equal(ad.status, "warning")
 assert.match(ad.status_reason, /no reading yet/)
 
+// Cloudflare spend policies: a blocking limit reached is an error, an alert-only one a warning.
+const cfCost = async () => (await db.from("client_states").select("status, status_reason").eq("unique_id", "cost-cf").single()).data
+const lim = (blocks: boolean, status: string) => ({ name: "cap", product: "workers", blocks, threshold: 50, spent: 51, status })
+await report("cost", "cost-cf", { provider: "cloudflare", name: "Cloudflare", monthToDate: 51, projected: 60, limits: [lim(true, "below_limit")] })
+assert.equal((await cfCost()).status, "online")
+await report("cost", "cost-cf", { provider: "cloudflare", name: "Cloudflare", monthToDate: 51, projected: 60, limits: [lim(false, "limit_reached")] })
+assert.equal((await cfCost()).status, "warning")
+await report("cost", "cost-cf", { provider: "cloudflare", name: "Cloudflare", monthToDate: 51, projected: 60, limits: [lim(false, "limit_reached"), lim(true, "limit_reached")] })
+const cf = await cfCost()
+assert.equal(cf.status, "error")
+assert.match(cf.status_reason, /workers spending limit of \$50\.00 reached, Cloudflare is blocking it/)
+
 console.log("ingest.check: ok")
