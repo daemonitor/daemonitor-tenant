@@ -928,6 +928,16 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
                 }
                 break;
             }
+
+            case "camera": {
+                // One row per camera (CameraPlugin). Its frames go to
+                // /api/camera/frame, never in here, so history stays small.
+                if (body.reachable === false || body.error) {
+                    systemStatus = "error"
+                    statusReason = `${body.name || "camera"}: ${String(body.error || "not answering").slice(0, 160)}`
+                }
+                break;
+            }
         }
 
         // Device datapoint merge: netscan (reachability) and snmp (metrics) that

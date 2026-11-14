@@ -4,6 +4,7 @@
  * the frontend route's logic with RLS and share_grants replaced by the
  * caller's scope and role. The Worker routes are thin and all call op().
  */
+import type { FrameStore } from "./frames"
 import { classifyMember } from "~/utils/clusterEval"
 import { listSlackConversations, postSlackMessage } from "~/server/utils/slack"
 import { deliverWebhook, newWebhookSecret, webhookUrlProblem } from "~/server/utils/webhook"
@@ -20,6 +21,8 @@ export interface OpCtx {
   who: Identity | null
   scope: Scope | null
   role: Role | null
+  /** The DO's key-value storage, where camera frames live. */
+  storage?: FrameStore
 }
 
 const need = (c: OpCtx, role: Role) => {
