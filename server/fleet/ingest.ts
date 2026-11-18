@@ -68,6 +68,22 @@ export async function ingest(client: Db, ctx: FleetCtx, req: IngestRequest) {
 
         const system = systems[0]
 
+        // The agent saw this service go away (a docker project whose containers
+        // were all removed, like a CI job's service container). Removed is not
+        // down: drop the row now instead of painting it OFFLINE until the reaper
+        // catches it two hours later, and close anything it had open.
+        if (body?.removed === true) {
+            const { data: gone } = await client.from("client_states").select("id")
+                .eq("unique_id", uniqueId).eq("system_id", system.id)
+            const ids = (gone || []).map((r: any) => r.id)
+            if (ids.length) {
+                await client.from("group_members").delete().in("service_id", ids)
+                await client.from("client_states").delete().in("id", ids)
+            }
+            await resolveNotifications(ctx, client, system, dataType, uniqueId)
+            return { success: true, message: "Service removed", removed: ids.length }
+        }
+
         // ponytail: no module check yet. It comes back as a signed entitlement
         // fetched from daemonitor.com (see the migration plan, "Modules").
 

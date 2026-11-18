@@ -56,6 +56,19 @@ assert.equal(pushed.length, 2, "cooldown holds the push")
 await report("docker", "docker-app", good)
 assert.equal(pushed.length, 2, "a quiet alert's recovery is not pushed")
 
+// removed: the agent says the project is gone, so the row, its group
+// membership and its open alert go with it
+await report("docker", "docker-ci", bad)
+await report("docker", "docker-ci", bad)
+const { data: ci } = await db.from("client_states").select("id").eq("unique_id", "docker-ci").single()
+await db.from("group_members").insert({ group_id: "g1", service_id: ci.id })
+assert.equal((await open()).filter((r: any) => r.source_detail === "docker-ci").length, 1)
+await report("docker", "docker-ci", { project: "ci", removed: true })
+assert.equal((await db.from("client_states").select("id").eq("unique_id", "docker-ci")).data.length, 0, "row deleted")
+assert.equal((await db.from("group_members").select("service_id").eq("service_id", ci.id)).data.length, 0, "membership deleted")
+assert.equal((await open()).filter((r: any) => r.source_detail === "docker-ci").length, 0, "alert resolved")
+await report("docker", "docker-ci", { project: "ci", removed: true }) // a repeat is harmless
+
 // web findings: one alert per finding, closed when no longer reported
 await report("web", "web-shop", { name: "shop", ok: false, status: 503 })
 assert.deepEqual((await open()).map((r: any) => r.source_detail), ["web:fail:shop"])
